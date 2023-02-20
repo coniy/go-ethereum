@@ -417,19 +417,7 @@ func (h *handler) handleCallMsg(ctx *callProc, msg *jsonrpcMessage) *jsonrpcMess
 		h.log.Debug("Served "+msg.Method, "duration", time.Since(start))
 		return nil
 	case msg.isCall():
-		resp := h.handleCall(ctx, msg)
-		var ctx []interface{}
-		ctx = append(ctx, "reqid", idForLog{msg.ID}, "duration", time.Since(start))
-		if resp.Error != nil {
-			ctx = append(ctx, "err", resp.Error.Message)
-			if resp.Error.Data != nil {
-				ctx = append(ctx, "errdata", resp.Error.Data)
-			}
-			h.log.Warn("Served "+msg.Method, ctx...)
-		} else {
-			h.log.Debug("Served "+msg.Method, ctx...)
-		}
-		return resp
+		return h.handleCall(ctx, msg)
 	case msg.hasValidID():
 		return msg.errorResponse(&invalidRequestError{"invalid request"})
 	default:
