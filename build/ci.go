@@ -128,7 +128,7 @@ var (
 		"focal":   "golang-go",   // EOL: 04/2030
 		"jammy":   "golang-go",   // EOL: 04/2032
 		"kinetic": "golang-go",   // EOL: 07/2023
-		//"lunar": "golang-go",  // EOL: 01/2024
+		"lunar":   "golang-go",   // EOL: 01/2024
 	}
 
 	debGoBootPaths = map[string]string{
@@ -144,10 +144,10 @@ var (
 	// This is the version of Go that will be used to bootstrap the PPA builder.
 	//
 	// This version is fine to be old and full of security holes, we just use it
-	// to build the latest Go. Don't change it. If it ever becomes infufficient,
+	// to build the latest Go. Don't change it. If it ever becomes insufficient,
 	// we need to switch over to a recursive builder to jumpt across supported
 	// versions.
-	gobootVersion = "1.19"
+	gobootVersion = "1.19.6"
 )
 
 var GOBIN, _ = filepath.Abs(filepath.Join("build", "bin"))
@@ -721,7 +721,6 @@ func doDebianSource(cmdline []string) {
 			if *upload != "" {
 				ppaUpload(*workdir, *upload, *sshUser, []string{source, dsc, changes, buildinfo})
 			}
-			return
 		}
 	}
 }
