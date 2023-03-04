@@ -315,7 +315,7 @@ func (s *Ethereum) APIs() []rpc.API {
 			Namespace: "net",
 			Service:   s.netRPCService,
 		}, {
-			Namespace: "searcher",
+			Namespace: "eth",
 			Service:   searcher.NewSearcherAPI(s.APIBackend, s.BlockChain()),
 		},
 	}...)

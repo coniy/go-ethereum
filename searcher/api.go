@@ -34,13 +34,13 @@ func NewSearcherAPI(b ethapi.Backend, chain *core.BlockChain) *API {
 	}
 }
 
-// CallBundle will simulate a bundle of transactions at the top of a given block
+// SearcherCallBundle will simulate a bundle of transactions at the top of a given block
 // number with the state of another (or the same) block. This can be used to
 // simulate future blocks with the current state, or it can be used to simulate
 // a past block.
 // The sender is responsible for signing the transactions and using the correct
 // nonce and ensuring validity
-func (s *API) CallBundle(ctx context.Context, args CallBundleArgs) (*CallBundleResult, error) {
+func (s *API) SearcherCallBundle(ctx context.Context, args CallBundleArgs) (*CallBundleResult, error) {
 	if len(args.Txs) == 0 {
 		return nil, errors.New("bundle missing txs")
 	}
@@ -207,7 +207,7 @@ func (s *API) CallBundle(ctx context.Context, args CallBundleArgs) (*CallBundleR
 	return result, nil
 }
 
-func (s *API) Call(ctx context.Context, args CallArgs) (*CallResult, error) {
+func (s *API) SearcherCall(ctx context.Context, args CallArgs) (*CallResult, error) {
 	if len(args.Txs) == 0 {
 		return nil, errors.New("bundle missing txs")
 	}
