@@ -14,7 +14,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/internal/ethapi"
-	"github.com/ethereum/go-ethereum/log"
+	"github.com/ethereum/go-ethereum/rpc"
 	"golang.org/x/crypto/sha3"
 	"math/big"
 	"time"
@@ -44,20 +44,9 @@ func (s *API) SearcherCallBundle(ctx context.Context, args CallBundleArgs) (*Cal
 	if len(args.Txs) == 0 {
 		return nil, errors.New("bundle missing txs")
 	}
-	if args.BlockNumber == 0 {
-		return nil, errors.New("bundle missing blockNumber")
+	if args.StateBlockNumberOrHash == (rpc.BlockNumberOrHash{}) {
+		args.StateBlockNumberOrHash = rpc.BlockNumberOrHashWithNumber(rpc.LatestBlockNumber)
 	}
-
-	var txs types.Transactions
-
-	for _, encodedTx := range args.Txs {
-		tx := new(types.Transaction)
-		if err := tx.UnmarshalBinary(encodedTx); err != nil {
-			return nil, err
-		}
-		txs = append(txs, tx)
-	}
-	defer func(start time.Time) { log.Debug("Executing EVM call finished", "runtime", time.Since(start)) }(time.Now())
 
 	timeoutMilliSeconds := int64(5000)
 	if args.Timeout != nil {
@@ -65,6 +54,46 @@ func (s *API) SearcherCallBundle(ctx context.Context, args CallBundleArgs) (*Cal
 	}
 	timeout := time.Millisecond * time.Duration(timeoutMilliSeconds)
 
+	var txs types.Transactions
+	for _, encodedTx := range args.Txs {
+		tx := new(types.Transaction)
+		if err := tx.UnmarshalBinary(encodedTx); err != nil {
+			return nil, err
+		}
+		txs = append(txs, tx)
+	}
+
+	state, parent, err := s.b.StateAndHeaderByNumberOrHash(ctx, args.StateBlockNumberOrHash)
+	if state == nil || err != nil {
+		return nil, err
+	}
+
+	// override state
+	if err := args.StateOverrides.Apply(state); err != nil {
+		return nil, err
+	}
+
+	header := &types.Header{
+		ParentHash: parent.Hash(),
+		Number:     new(big.Int).Set(parent.Number).Add(parent.Number, common.Big1),
+		GasLimit:   parent.GasLimit,
+		Time:       parent.Time + 12, // eth average block time is 12 seconds
+		Difficulty: new(big.Int).Set(parent.Difficulty),
+		Coinbase:   parent.Coinbase,
+	}
+	if s.b.ChainConfig().IsLondon(big.NewInt(parent.Number.Int64())) {
+		header.BaseFee = misc.CalcBaseFee(s.b.ChainConfig(), parent)
+	}
+
+	// header overrides
+	args.BlockOverrides.Apply(header)
+
+	// Setup the gas pool (also for unmetered requests)
+	// and apply the message.
+	gp := new(core.GasPool).AddGas(math.MaxUint64)
+
+	bundleHash := sha3.NewLegacyKeccak256()
+	signer := types.MakeSigner(s.b.ChainConfig(), header.Number)
 	// Setup context so it may be cancelled the call has completed
 	// or, in case of unmetered gas, setup a context with a timeout.
 	var cancel context.CancelFunc
@@ -77,54 +106,8 @@ func (s *API) SearcherCallBundle(ctx context.Context, args CallBundleArgs) (*Cal
 	// this makes sure resources are cleaned up.
 	defer cancel()
 
-	state, parent, err := s.b.StateAndHeaderByNumberOrHash(ctx, args.StateBlockNumberOrHash)
-	if state == nil || err != nil {
-		return nil, err
-	}
-	blockNumber := big.NewInt(int64(args.BlockNumber))
-
-	timestamp := parent.Time + 12
-	if args.Timestamp != nil {
-		timestamp = *args.Timestamp
-	}
-	coinbase := parent.Coinbase
-	if args.Coinbase != nil {
-		coinbase = *args.Coinbase
-	}
-	difficulty := parent.Difficulty
-	if args.Difficulty != nil {
-		difficulty = args.Difficulty
-	}
-	gasLimit := parent.GasLimit
-	if args.GasLimit != nil {
-		gasLimit = *args.GasLimit
-	}
-	var baseFee *big.Int
-	if args.BaseFee != nil {
-		baseFee = args.BaseFee
-	} else if s.b.ChainConfig().IsLondon(big.NewInt(args.BlockNumber.Int64())) {
-		baseFee = misc.CalcBaseFee(s.b.ChainConfig(), parent)
-	}
-	header := &types.Header{
-		ParentHash: parent.Hash(),
-		Number:     blockNumber,
-		GasLimit:   gasLimit,
-		Time:       timestamp,
-		Difficulty: difficulty,
-		Coinbase:   coinbase,
-		BaseFee:    baseFee,
-	}
-
-	vmconfig := vm.Config{}
-
-	// Setup the gas pool (also for unmetered requests)
-	// and apply the message.
-	gp := new(core.GasPool).AddGas(math.MaxUint64)
-
-	bundleHash := sha3.NewLegacyKeccak256()
-	signer := types.MakeSigner(s.b.ChainConfig(), blockNumber)
-	result := &CallBundleResult{
-		CoinbaseDiff:      state.GetBalance(coinbase),
+	ret := &CallBundleResult{
+		CoinbaseDiff:      state.GetBalance(header.Coinbase),
 		GasFees:           new(big.Int),
 		EthSentToCoinbase: new(big.Int),
 		StateBlockNumber:  parent.Number.Int64(),
@@ -136,83 +119,75 @@ func (s *API) SearcherCallBundle(ctx context.Context, args CallBundleArgs) (*Cal
 			return nil, err
 		}
 
-		coinbaseBalanceBeforeTx := state.GetBalance(coinbase)
+		coinbaseBalanceBeforeTx := state.GetBalance(header.Coinbase)
 		state.SetTxContext(tx.Hash(), i)
 
-		receipt, execResult, err := applyTransactionWithResult(s.b.ChainConfig(), s.chain, &coinbase, gp, state, header, tx, &header.GasUsed, vmconfig)
+		receipt, result, err := applyTransactionWithResult(s.b.ChainConfig(), s.chain, &header.Coinbase, gp, state, header, tx, &header.GasUsed, *s.chain.GetVMConfig())
 		if err != nil {
-			return nil, fmt.Errorf("err: %w; txhash %s", err, tx.Hash())
+			return nil, fmt.Errorf("tx %s error: %w", tx.Hash(), err)
 		}
-		result.TotalGasUsed += receipt.GasUsed
-
-		from, err := types.Sender(signer, tx)
-		if err != nil {
-			return nil, fmt.Errorf("err: %w; txhash %s", err, tx.Hash())
-		}
-		to := receipt.ContractAddress
-		if tx.To() != nil {
-			to = *tx.To()
-		}
-		gasPrice, err := tx.EffectiveGasTip(header.BaseFee)
-		if err != nil {
-			return nil, fmt.Errorf("err: %w; txhash %s", err, tx.Hash())
-		}
-		txGasFees := new(big.Int).Mul(big.NewInt(int64(receipt.GasUsed)), gasPrice)
-		result.GasFees.Add(result.GasFees, txGasFees)
+		ret.TotalGasUsed += receipt.GasUsed
 		bundleHash.Write(tx.Hash().Bytes())
 
-		var errString string
-		revertData := execResult.Revert()
-		if len(revertData) > 0 {
-			reason, errUnpack := abi.UnpackRevert(execResult.Revert())
-			if errUnpack != nil {
-				errString = "execution reverted"
-			} else {
-				errString = fmt.Sprintf("execution reverted: %v", reason)
-			}
+		txResult := CallBundleTxResult{
+			TxHash:       tx.Hash(),
+			GasUsed:      receipt.GasUsed,
+			ReturnData:   result.ReturnData,
+			Logs:         receipt.Logs,
+			CoinbaseDiff: new(big.Int).Sub(state.GetBalance(header.Coinbase), coinbaseBalanceBeforeTx),
+			CallMsg: &CallMsg{
+				Gas:        tx.Gas(),
+				GasPrice:   tx.GasPrice(),
+				GasFeeCap:  tx.GasFeeCap(),
+				GasTipCap:  tx.GasTipCap(),
+				Value:      tx.Value(),
+				Nonce:      tx.Nonce(),
+				Data:       tx.Data(),
+				AccessList: tx.AccessList(),
+			},
+		}
+		txResult.CallMsg.From, err = types.Sender(signer, tx)
+		if err != nil {
+			return nil, fmt.Errorf("tx %s error: %w", tx.Hash(), err)
+		}
+		txResult.CallMsg.To = receipt.ContractAddress
+		if tx.To() != nil {
+			txResult.CallMsg.To = *tx.To()
+		}
+		txResult.GasPrice, err = tx.EffectiveGasTip(header.BaseFee)
+		if err != nil {
+			return nil, fmt.Errorf("tx %s error: %w", tx.Hash(), err)
+		}
+		txResult.GasFees = new(big.Int).Mul(big.NewInt(int64(receipt.GasUsed)), txResult.GasPrice)
+		ret.GasFees.Add(ret.GasFees, txResult.GasFees)
+		txResult.EthSentToCoinbase = new(big.Int).Sub(txResult.CoinbaseDiff, txResult.GasFees)
+		txResult.GasPrice = new(big.Int).Div(txResult.CoinbaseDiff, big.NewInt(int64(receipt.GasUsed)))
+
+		if result.Err != nil {
+			txResult.Error = result.Err.Error()
+		}
+		reason, errUnpack := abi.UnpackRevert(result.Revert())
+		if errUnpack == nil {
+			txResult.Error = fmt.Sprintf("execution reverted: %v", reason)
 		}
 
-		txCoinbaseDiff := new(big.Int).Sub(state.GetBalance(coinbase), coinbaseBalanceBeforeTx)
-
-		result.Results = append(result.Results, CallBundleTxResult{
-			TxHash:            tx.Hash(),
-			GasUsed:           receipt.GasUsed,
-			Error:             errString,
-			ReturnData:        execResult.ReturnData,
-			Logs:              receipt.Logs,
-			CoinbaseDiff:      txCoinbaseDiff,
-			GasFees:           txGasFees,
-			EthSentToCoinbase: new(big.Int).Sub(txCoinbaseDiff, txGasFees),
-			GasPrice:          new(big.Int).Div(txCoinbaseDiff, big.NewInt(int64(receipt.GasUsed))),
-			CallMsg: &CallMsg{
-				From:                 from,
-				To:                   to,
-				Gas:                  tx.Gas(),
-				GasPrice:             tx.GasPrice(),
-				MaxFeePerGas:         tx.GasFeeCap(),
-				MaxPriorityFeePerGas: tx.GasTipCap(),
-				Value:                tx.Value(),
-				Nonce:                tx.Nonce(),
-				Data:                 tx.Data(),
-				AccessList:           tx.AccessList(),
-			},
-		})
+		ret.Results = append(ret.Results, txResult)
 	}
 
-	result.CoinbaseDiff = new(big.Int).Sub(state.GetBalance(coinbase), result.CoinbaseDiff)
-	result.EthSentToCoinbase = new(big.Int).Sub(result.CoinbaseDiff, result.GasFees)
-	result.BundleGasPrice = new(big.Int).Div(result.CoinbaseDiff, big.NewInt(int64(result.TotalGasUsed)))
-	result.BundleHash = common.BytesToHash(bundleHash.Sum(nil))
+	ret.CoinbaseDiff = new(big.Int).Sub(state.GetBalance(header.Coinbase), ret.CoinbaseDiff)
+	ret.EthSentToCoinbase = new(big.Int).Sub(ret.CoinbaseDiff, ret.GasFees)
+	ret.BundleGasPrice = new(big.Int).Div(ret.CoinbaseDiff, big.NewInt(int64(ret.TotalGasUsed)))
+	ret.BundleHash = common.BytesToHash(bundleHash.Sum(nil))
 
-	return result, nil
+	return ret, nil
 }
 
 func (s *API) SearcherCall(ctx context.Context, args CallArgs) (*CallResult, error) {
 	if len(args.Txs) == 0 {
-		return nil, errors.New("bundle missing txs")
+		return nil, errors.New("missing txs")
 	}
-	if args.BlockNumber == 0 {
-		return nil, errors.New("bundle missing blockNumber")
+	if args.StateBlockNumberOrHash == (rpc.BlockNumberOrHash{}) {
+		args.StateBlockNumberOrHash = rpc.BlockNumberOrHashWithNumber(rpc.LatestBlockNumber)
 	}
 
 	timeoutMS := int64(5000)
@@ -220,6 +195,38 @@ func (s *API) SearcherCall(ctx context.Context, args CallArgs) (*CallResult, err
 		timeoutMS = *args.Timeout
 	}
 	timeout := time.Millisecond * time.Duration(timeoutMS)
+
+	state, parent, err := s.b.StateAndHeaderByNumberOrHash(ctx, args.StateBlockNumberOrHash)
+	if state == nil || err != nil {
+		return nil, err
+	}
+
+	// override state
+	if err := args.StateOverrides.Apply(state); err != nil {
+		return nil, err
+	}
+
+	header := &types.Header{
+		ParentHash: parent.Hash(),
+		Number:     new(big.Int).Set(parent.Number).Add(parent.Number, common.Big1),
+		GasLimit:   parent.GasLimit,
+		Time:       parent.Time + 12, // eth average block time is 12 seconds
+		Difficulty: new(big.Int).Set(parent.Difficulty),
+		Coinbase:   parent.Coinbase,
+		BaseFee:    new(big.Int).Set(parent.BaseFee),
+	}
+
+	// header overrides
+	args.BlockOverrides.Apply(header)
+
+	// RPC Call gas cap
+	globalGasCap := s.b.RPCGasCap()
+
+	// Gas pool
+	gp := new(core.GasPool).AddGas(math.MaxUint64)
+
+	// Block context
+	blockContext := core.NewEVMBlockContext(header, s.chain, &header.Coinbase)
 
 	// Setup context so it may be cancelled when the call
 	// has completed or, in case of unmetered gas, setup
@@ -230,59 +237,13 @@ func (s *API) SearcherCall(ctx context.Context, args CallArgs) (*CallResult, err
 	} else {
 		ctx, cancel = context.WithCancel(ctx)
 	}
-
 	// Make sure the context is cancelled when the call has completed
 	// This makes sure resources are cleaned up
 	defer cancel()
 
-	state, parent, err := s.b.StateAndHeaderByNumberOrHash(ctx, args.StateBlockNumberOrHash)
-	if state == nil || err != nil {
-		return nil, err
-	}
-	blockNumber := big.NewInt(int64(args.BlockNumber))
-	timestamp := parent.Time + 12
-	if args.Timestamp != nil {
-		timestamp = *args.Timestamp
-	}
-	coinbase := parent.Coinbase
-	if args.Coinbase != nil {
-		coinbase = *args.Coinbase
-	}
-
-	header := &types.Header{
-		ParentHash: parent.Hash(),
-		Number:     blockNumber,
-		GasLimit:   parent.GasLimit,
-		Time:       timestamp,
-		Difficulty: parent.Difficulty,
-		Coinbase:   coinbase,
-		BaseFee:    parent.BaseFee,
-	}
-
-	// RPC Call gas cap
-	globalGasCap := s.b.RPCGasCap()
-
-	// Gas pool
-	gp := new(core.GasPool).AddGas(math.MaxUint64)
-
-	// Block context
-	blockContext := core.NewEVMBlockContext(header, s.chain, &coinbase)
-
-	// override state
-	if args.StateOverrides != nil {
-		stateOverrides := make(ethapi.StateOverride)
-		for addr, override := range *args.StateOverrides {
-			stateOverrides[addr] = ethapi.OverrideAccount(override)
-		}
-		if err := stateOverrides.Apply(state); err != nil {
-			return nil, err
-		}
-	}
-	(*ethapi.BlockOverrides)(args.BlockOverrides).Apply(&blockContext)
-
 	// Feed each of the transactions into the VM ctx
 	// And try and estimate the gas used
-	result := &CallResult{
+	ret := &CallResult{
 		StateBlockNumber: parent.Number.Int64(),
 		Results:          make([]CallTxResult, 0, len(args.Txs)),
 	}
@@ -292,13 +253,13 @@ func (s *API) SearcherCall(ctx context.Context, args CallArgs) (*CallResult, err
 			return nil, err
 		}
 
-		// Since its a txCall we'll just prepare the
+		// Since it is a txCall we'll just prepare the
 		// state with a random hash
-		var randomHash common.Hash
-		rand.Read(randomHash[:])
+		var txHash common.Hash
+		rand.Read(txHash[:])
 
 		// New random hash since its a call
-		state.SetTxContext(randomHash, i)
+		state.SetTxContext(txHash, i)
 
 		// Convert tx args to msg to apply state transition
 		txArgs := ethapi.TransactionArgs{
@@ -306,10 +267,9 @@ func (s *API) SearcherCall(ctx context.Context, args CallArgs) (*CallResult, err
 			To:                   &callMsg.To,
 			Gas:                  (*hexutil.Uint64)(&callMsg.Gas),
 			GasPrice:             (*hexutil.Big)(callMsg.GasPrice),
-			MaxFeePerGas:         (*hexutil.Big)(callMsg.MaxFeePerGas),
-			MaxPriorityFeePerGas: (*hexutil.Big)(callMsg.MaxPriorityFeePerGas),
+			MaxFeePerGas:         (*hexutil.Big)(callMsg.GasFeeCap),
+			MaxPriorityFeePerGas: (*hexutil.Big)(callMsg.GasTipCap),
 			Value:                (*hexutil.Big)(callMsg.Value),
-			Nonce:                (*hexutil.Uint64)(&callMsg.Nonce),
 			Data:                 &callMsg.Data,
 			AccessList:           &callMsg.AccessList,
 		}
@@ -318,42 +278,35 @@ func (s *API) SearcherCall(ctx context.Context, args CallArgs) (*CallResult, err
 			return nil, err
 		}
 
-		// Prepare the hashes
-		txContext := core.NewEVMTxContext(msg)
-
-		// Get EVM Environment
-		vmenv := vm.NewEVM(blockContext, txContext, state, s.b.ChainConfig(), vm.Config{NoBaseFee: true})
+		// Create a new EVM environment
+		evm := vm.NewEVM(blockContext, core.NewEVMTxContext(msg), state, s.chain.Config(), vm.Config{NoBaseFee: true})
 
 		// Apply state transition
-		execResult, execErr := core.ApplyMessage(vmenv, msg, gp)
+		var txResult CallTxResult
+		result, err := core.ApplyMessage(evm, msg, gp)
+		if err != nil {
+			txResult.Error = fmt.Sprintf("%s (supplied gas %d)", err.Error(), msg.Gas())
+		} else {
+			// Modifications are committed to the state
+			// Only delete empty objects if EIP158/161 (a.k.a Spurious Dragon) is in effect
+			state.Finalise(evm.ChainConfig().IsEIP158(blockContext.BlockNumber))
 
-		// Modifications are committed to the state
-		// Only delete empty objects if EIP158/161 (a.k.a Spurious Dragon) is in effect
-		state.Finalise(vmenv.ChainConfig().IsEIP158(blockNumber))
+			txResult.Logs = state.GetLogs(txHash, header.Number.Uint64(), header.Hash())
 
-		txResult := CallTxResult{
-			Logs: state.GetLogs(randomHash, header.Number.Uint64(), header.Hash()),
-		}
-		if execErr != nil {
-			txResult.Error = execErr.Error()
-		}
-		if execResult != nil {
-			revertData := execResult.Revert()
-			if len(revertData) > 0 {
-				reason, errUnpack := abi.UnpackRevert(execResult.Revert())
-				if errUnpack != nil {
-					txResult.Error = "execution reverted"
-				} else {
-					txResult.Error = fmt.Sprintf("execution reverted: %v", reason)
-				}
+			if result.Err != nil {
+				txResult.Error = result.Err.Error()
 			}
-			txResult.GasUsed = execResult.UsedGas
-			result.TotalGasUsed += execResult.UsedGas
-			txResult.ReturnData = execResult.ReturnData
+			reason, errUnpack := abi.UnpackRevert(result.Revert())
+			if errUnpack == nil {
+				txResult.Error = fmt.Sprintf("execution reverted: %v", reason)
+			}
+			txResult.GasUsed = result.UsedGas
+			ret.TotalGasUsed += result.UsedGas
+			txResult.ReturnData = result.ReturnData
 		}
 
-		result.Results = append(result.Results, txResult)
+		ret.Results = append(ret.Results, txResult)
 	}
 
-	return result, nil
+	return ret, nil
 }
