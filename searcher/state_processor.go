@@ -27,7 +27,7 @@ import (
 )
 
 func applyTransactionWithResult(config *params.ChainConfig, bc core.ChainContext, author *common.Address, gp *core.GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64, cfg vm.Config) (*types.Receipt, *core.ExecutionResult, error) {
-	msg, err := tx.AsMessage(types.MakeSigner(config, header.Number), header.BaseFee)
+	msg, err := core.TransactionToMessage(tx, types.MakeSigner(config, header.Number), header.BaseFee)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -66,7 +66,7 @@ func applyTransactionWithResult(config *params.ChainConfig, bc core.ChainContext
 	receipt.GasUsed = result.UsedGas
 
 	// If the transaction created a contract, store the creation address in the receipt.
-	if msg.To() == nil {
+	if msg.To == nil {
 		receipt.ContractAddress = crypto.CreateAddress(evm.TxContext.Origin, tx.Nonce())
 	}
 

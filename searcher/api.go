@@ -285,7 +285,7 @@ func (s *API) SearcherCall(ctx context.Context, args CallArgs) (*CallResult, err
 		var txResult CallTxResult
 		result, err := core.ApplyMessage(evm, msg, gp)
 		if err != nil {
-			txResult.Error = fmt.Sprintf("%s (supplied gas %d)", err.Error(), msg.Gas())
+			txResult.Error = fmt.Sprintf("%s (supplied gas %d)", err.Error(), msg.GasLimit)
 		} else {
 			// Modifications are committed to the state
 			// Only delete empty objects if EIP158/161 (a.k.a Spurious Dragon) is in effect
