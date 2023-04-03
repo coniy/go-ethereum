@@ -154,7 +154,7 @@ func testIterativeSync(t *testing.T, count int, bypath bool) {
 			}
 		} else {
 			for i, element := range elements {
-				data, _, err := srcTrie.TryGetNode(element.syncPath[len(element.syncPath)-1])
+				data, _, err := srcTrie.GetNode(element.syncPath[len(element.syncPath)-1])
 				if err != nil {
 					t.Fatalf("failed to retrieve node data for path %x: %v", element.path, err)
 				}
@@ -434,6 +434,7 @@ func TestDuplicateAvoidanceSync(t *testing.T) {
 // Tests that at any point in time during a sync, only complete sub-tries are in
 // the database.
 func TestIncompleteSync(t *testing.T) {
+	t.Parallel()
 	// Create a random trie to copy
 	srcDb, srcTrie, _ := makeTestTrie()
 

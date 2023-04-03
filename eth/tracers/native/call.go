@@ -42,17 +42,17 @@ type callLog struct {
 }
 
 type callFrame struct {
-	Type         vm.OpCode      `json:"-"`
-	From         common.Address `json:"from"`
-	Gas          uint64         `json:"gas"`
-	GasUsed      uint64         `json:"gasUsed"`
-	To           common.Address `json:"to,omitempty" rlp:"optional"`
-	Input        []byte         `json:"input" rlp:"optional"`
-	Output       []byte         `json:"output,omitempty" rlp:"optional"`
-	Error        string         `json:"error,omitempty" rlp:"optional"`
-	RevertReason string         `json:"revertReason,omitempty"`
-	Calls        []callFrame    `json:"calls,omitempty" rlp:"optional"`
-	Logs         []callLog      `json:"logs,omitempty" rlp:"optional"`
+	Type         vm.OpCode       `json:"-"`
+	From         common.Address  `json:"from"`
+	Gas          uint64          `json:"gas"`
+	GasUsed      uint64          `json:"gasUsed"`
+	To           *common.Address `json:"to,omitempty" rlp:"optional"`
+	Input        []byte          `json:"input" rlp:"optional"`
+	Output       []byte          `json:"output,omitempty" rlp:"optional"`
+	Error        string          `json:"error,omitempty" rlp:"optional"`
+	RevertReason string          `json:"revertReason,omitempty"`
+	Calls        []callFrame     `json:"calls,omitempty" rlp:"optional"`
+	Logs         []callLog       `json:"logs,omitempty" rlp:"optional"`
 	// Placed at end on purpose. The RLP will be decoded to 0 instead of
 	// nil if there are non-empty elements after in the struct.
 	Value *big.Int `json:"value,omitempty" rlp:"optional"`
@@ -74,7 +74,7 @@ func (f *callFrame) processOutput(output []byte, err error) {
 	}
 	f.Error = err.Error()
 	if f.Type == vm.CREATE || f.Type == vm.CREATE2 {
-		f.To = common.Address{}
+		f.To = nil
 	}
 	if !errors.Is(err, vm.ErrExecutionReverted) || len(output) == 0 {
 		return
@@ -127,10 +127,11 @@ func newCallTracer(ctx *tracers.Context, cfg json.RawMessage) (tracers.Tracer, e
 
 // CaptureStart implements the EVMLogger interface to initialize the tracing operation.
 func (t *callTracer) CaptureStart(env *vm.EVM, from common.Address, to common.Address, create bool, input []byte, gas uint64, value *big.Int) {
+	toCopy := to
 	t.callstack[0] = callFrame{
 		Type:  vm.CALL,
 		From:  from,
-		To:    to,
+		To:    &toCopy,
 		Input: common.CopyBytes(input),
 		Gas:   gas,
 		Value: value,
@@ -147,6 +148,10 @@ func (t *callTracer) CaptureEnd(output []byte, gasUsed uint64, err error) {
 
 // CaptureState implements the EVMLogger interface to trace a single step of VM execution.
 func (t *callTracer) CaptureState(pc uint64, op vm.OpCode, gas, cost uint64, scope *vm.ScopeContext, rData []byte, depth int, err error) {
+	// skip if the previous op caused an error
+	if err != nil {
+		return
+	}
 	// Only logs need to be captured via opcode processing
 	if !t.config.WithLog {
 		return
@@ -175,7 +180,12 @@ func (t *callTracer) CaptureState(pc uint64, op vm.OpCode, gas, cost uint64, sco
 			topics[i] = common.Hash(topic.Bytes32())
 		}
 
-		data := scope.Memory.GetCopy(int64(mStart.Uint64()), int64(mSize.Uint64()))
+		data, err := tracers.GetMemoryCopyPadded(scope.Memory, int64(mStart.Uint64()), int64(mSize.Uint64()))
+		if err != nil {
+			// mSize was unrealistically large
+			return
+		}
+
 		log := callLog{Address: scope.Contract.Address(), Topics: topics, Data: hexutil.Bytes(data)}
 		t.callstack[len(t.callstack)-1].Logs = append(t.callstack[len(t.callstack)-1].Logs, log)
 	}
@@ -191,10 +201,11 @@ func (t *callTracer) CaptureEnter(typ vm.OpCode, from common.Address, to common.
 		return
 	}
 
+	toCopy := to
 	call := callFrame{
 		Type:  typ,
 		From:  from,
-		To:    to,
+		To:    &toCopy,
 		Input: common.CopyBytes(input),
 		Gas:   gas,
 		Value: value,
