@@ -60,13 +60,15 @@ func (diff *StateOverride) Apply(state *state.StateDB) error {
 }
 
 type BlockOverrides struct {
-	Number     *big.Int        `json:"number,omitempty"`
-	Difficulty *big.Int        `json:"difficulty,omitempty"`
-	Time       *uint64         `json:"time,omitempty"`
-	GasLimit   *uint64         `json:"gasLimit,omitempty"`
-	Coinbase   *common.Address `json:"coinbase,omitempty"`
-	Random     *common.Hash    `json:"random,omitempty"`
-	BaseFee    *big.Int        `json:"baseFee,omitempty"`
+	Number      *big.Int        `json:"number,omitempty"`
+	NumberShift int64           `json:"numberShift,omitempty"`
+	Difficulty  *big.Int        `json:"difficulty,omitempty"`
+	Time        *uint64         `json:"time,omitempty"`
+	TimeShift   int64           `json:"timeShift,omitempty"`
+	GasLimit    *uint64         `json:"gasLimit,omitempty"`
+	Coinbase    *common.Address `json:"coinbase,omitempty"`
+	Random      *common.Hash    `json:"random,omitempty"`
+	BaseFee     *big.Int        `json:"baseFee,omitempty"`
 }
 
 // Apply overrides the given header fields into the given block context.
@@ -77,11 +79,17 @@ func (diff *BlockOverrides) Apply(header *types.Header) {
 	if diff.Number != nil {
 		header.Number = diff.Number
 	}
+	if diff.NumberShift != 0 {
+		header.Number.Add(header.Number, big.NewInt(diff.NumberShift))
+	}
 	if diff.Difficulty != nil {
 		header.Difficulty = diff.Difficulty
 	}
 	if diff.Time != nil {
 		header.Time = *diff.Time
+	}
+	if diff.TimeShift != 0 {
+		header.Time += uint64(diff.TimeShift)
 	}
 	if diff.GasLimit != nil {
 		header.GasLimit = *diff.GasLimit
@@ -95,15 +103,15 @@ func (diff *BlockOverrides) Apply(header *types.Header) {
 }
 
 type CallMsg struct {
-	From      common.Address `json:"from,omitempty"`
-	To        common.Address `json:"to,omitempty"`
-	Gas       uint64         `json:"gas,omitempty"`
-	GasPrice  *big.Int       `json:"gasPrice,omitempty"`
-	GasFeeCap *big.Int       `json:"gasFeeCap,omitempty"`
-	GasTipCap *big.Int       `json:"gasTipCap,omitempty"`
-	Value     *big.Int       `json:"value,omitempty"`
-	Nonce     uint64         `json:"nonce,omitempty"` // transaction returned nonce
-	Data      hexutil.Bytes  `json:"data,omitempty"`
+	From      common.Address  `json:"from,omitempty"`
+	To        *common.Address `json:"to,omitempty"`
+	Gas       uint64          `json:"gas,omitempty"`
+	GasPrice  *big.Int        `json:"gasPrice,omitempty"`
+	GasFeeCap *big.Int        `json:"gasFeeCap,omitempty"`
+	GasTipCap *big.Int        `json:"gasTipCap,omitempty"`
+	Value     *big.Int        `json:"value,omitempty"`
+	Nonce     uint64          `json:"nonce,omitempty"` // transaction returned nonce
+	Data      hexutil.Bytes   `json:"data,omitempty"`
 
 	// Introduced by AccessListTxType transaction.
 	AccessList types.AccessList `json:"accessList,omitempty"`
@@ -113,22 +121,23 @@ type CallBundleArgs struct {
 	Txs                    []hexutil.Bytes       `json:"txs,omitempty"`
 	StateBlockNumberOrHash rpc.BlockNumberOrHash `json:"stateBlockNumber,omitempty"`
 	Timeout                *int64                `json:"timeout,omitempty"`
+	EnableCallTracer       bool                  `json:"enableCallTracer,omitempty"`
 	BlockOverrides         *BlockOverrides       `json:"blockOverrides,omitempty"`
 	StateOverrides         *StateOverride        `json:"stateOverrides,omitempty"`
 }
 
 type CallBundleResult struct {
-	BundleGasPrice    *big.Int             `json:"bundleGasPrice,omitempty"`
-	BundleHash        common.Hash          `json:"bundleHash,omitempty"`
-	CoinbaseDiff      *big.Int             `json:"coinbaseDiff,omitempty"`
-	GasFees           *big.Int             `json:"gasFees,omitempty"`
-	EthSentToCoinbase *big.Int             `json:"ethSentToCoinbase,omitempty"`
-	StateBlockNumber  int64                `json:"stateBlockNumber,omitempty"`
-	TotalGasUsed      uint64               `json:"totalGasUsed,omitempty"`
-	Results           []CallBundleTxResult `json:"results,omitempty"`
+	BundleGasPrice    *big.Int          `json:"bundleGasPrice,omitempty"`
+	BundleHash        common.Hash       `json:"bundleHash,omitempty"`
+	CoinbaseDiff      *big.Int          `json:"coinbaseDiff,omitempty"`
+	GasFees           *big.Int          `json:"gasFees,omitempty"`
+	EthSentToCoinbase *big.Int          `json:"ethSentToCoinbase,omitempty"`
+	StateBlockNumber  int64             `json:"stateBlockNumber,omitempty"`
+	TotalGasUsed      uint64            `json:"totalGasUsed,omitempty"`
+	Txs               []*BundleTxResult `json:"txs,omitempty"`
 }
 
-type CallBundleTxResult struct {
+type BundleTxResult struct {
 	TxHash            common.Hash   `json:"txHash,omitempty"`
 	GasUsed           uint64        `json:"gasUsed,omitempty"`
 	Error             string        `json:"error,omitempty"`
@@ -139,25 +148,60 @@ type CallBundleTxResult struct {
 	EthSentToCoinbase *big.Int      `json:"ethSentToCoinbase,omitempty"`
 	GasPrice          *big.Int      `json:"gasPrice,omitempty"`
 	CallMsg           *CallMsg      `json:"callMsg,omitempty"`
+	CallFrame         *CallFrame    `json:"callFrame,omitempty"`
 }
 
 type CallArgs struct {
-	Txs                    []CallMsg             `json:"txs,omitempty"`
+	Txs                    []*CallMsg            `json:"txs,omitempty"`
 	StateBlockNumberOrHash rpc.BlockNumberOrHash `json:"stateBlockNumber,omitempty"`
 	Timeout                *int64                `json:"timeout,omitempty"`
+	EnableCallTracer       bool                  `json:"enableCallTracer,omitempty"`
 	BlockOverrides         *BlockOverrides       `json:"blockOverrides,omitempty"`
 	StateOverrides         *StateOverride        `json:"stateOverrides,omitempty"`
 }
 
 type CallResult struct {
-	StateBlockNumber int64          `json:"stateBlockNumber,omitempty"`
-	TotalGasUsed     uint64         `json:"totalGasUsed,omitempty"`
-	Results          []CallTxResult `json:"results,omitempty"`
+	StateBlockNumber int64       `json:"stateBlockNumber,omitempty"`
+	TotalGasUsed     uint64      `json:"totalGasUsed,omitempty"`
+	Txs              []*TxResult `json:"txs,omitempty"`
 }
 
-type CallTxResult struct {
+type TxResult struct {
 	GasUsed    uint64        `json:"gasUsed,omitempty"`
 	Error      string        `json:"error,omitempty"`
 	ReturnData hexutil.Bytes `json:"returnData,omitempty"`
 	Logs       []*types.Log  `json:"logs,omitempty"`
+	CallFrame  *CallFrame    `json:"callFrame,omitempty"`
+}
+
+type CallType string
+
+const (
+	CallTypeCall         = "CALL"
+	CallTypeStaticCall   = "STATICCALL"
+	CallTypeCreate       = "CREATE"
+	CallTypeCreate2      = "CREATE2"
+	CallTypeSelfDestruct = "SELFDESTRUCT"
+	CallTypeDelegateCall = "DELEGATECALL"
+)
+
+type CallFrame struct {
+	Type         CallType       `json:"type,omitempty"`
+	From         common.Address `json:"from,omitempty"`
+	To           common.Address `json:"to,omitempty"`
+	Gas          hexutil.Uint64 `json:"gas,omitempty"`
+	GasUsed      hexutil.Uint64 `json:"gasUsed,omitempty"`
+	Input        hexutil.Bytes  `json:"input,omitempty"`
+	Output       hexutil.Bytes  `json:"output,omitempty"`
+	Error        string         `json:"error,omitempty"`
+	RevertReason string         `json:"revertReason,omitempty"`
+	Calls        []*CallFrame   `json:"calls,omitempty"`
+	Logs         []*CallLog     `json:"logs,omitempty"`
+	Value        *hexutil.Big   `json:"value,omitempty"`
+}
+
+type CallLog struct {
+	Address common.Address `json:"address,omitempty"`
+	Topics  []common.Hash  `json:"topics,omitempty"`
+	Data    hexutil.Bytes  `json:"data,omitempty"`
 }
