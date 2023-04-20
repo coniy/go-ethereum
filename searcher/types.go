@@ -178,6 +178,7 @@ type CallType string
 
 const (
 	CallTypeCall         = "CALL"
+	CallTypeCALLCODE     = "CALLCODE"
 	CallTypeStaticCall   = "STATICCALL"
 	CallTypeCreate       = "CREATE"
 	CallTypeCreate2      = "CREATE2"
@@ -200,8 +201,30 @@ type CallFrame struct {
 	Value        *hexutil.Big   `json:"value,omitempty"`
 }
 
+func (f *CallFrame) ToLogs() []*types.Log {
+	if f == nil {
+		return nil
+	}
+	logs := make([]*types.Log, len(f.Logs))
+	for i, l := range f.Logs {
+		logs[i] = l.ToLog()
+	}
+	return logs
+}
+
 type CallLog struct {
 	Address common.Address `json:"address,omitempty"`
 	Topics  []common.Hash  `json:"topics,omitempty"`
 	Data    hexutil.Bytes  `json:"data,omitempty"`
+}
+
+func (l *CallLog) ToLog() *types.Log {
+	if l == nil {
+		return nil
+	}
+	return &types.Log{
+		Address: l.Address,
+		Topics:  l.Topics,
+		Data:    l.Data,
+	}
 }
