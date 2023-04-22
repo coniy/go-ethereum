@@ -335,10 +335,14 @@ func (s *API) SearcherCall(ctx context.Context, args CallArgs) (*CallResult, err
 		state.SetTxContext(txHash, i)
 
 		// Convert tx args to msg to apply state transition
+		var gasPtr *hexutil.Uint64
+		if callMsg.Gas > 0 {
+			gasPtr = (*hexutil.Uint64)(&callMsg.Gas)
+		}
 		txArgs := ethapi.TransactionArgs{
 			From:                 &callMsg.From,
 			To:                   callMsg.To,
-			Gas:                  (*hexutil.Uint64)(&callMsg.Gas),
+			Gas:                  gasPtr,
 			GasPrice:             (*hexutil.Big)(callMsg.GasPrice),
 			MaxFeePerGas:         (*hexutil.Big)(callMsg.GasFeeCap),
 			MaxPriorityFeePerGas: (*hexutil.Big)(callMsg.GasTipCap),
