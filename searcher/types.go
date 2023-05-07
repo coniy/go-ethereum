@@ -199,6 +199,8 @@ type CallFrame struct {
 	Calls        []*CallFrame   `json:"calls,omitempty"`
 	Logs         []*CallLog     `json:"logs,omitempty"`
 	Value        *hexutil.Big   `json:"value,omitempty"`
+
+	Parent *CallFrame `json:"-"`
 }
 
 func (f *CallFrame) ToLogs() []*types.Log {
