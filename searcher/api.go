@@ -153,11 +153,10 @@ func (s *API) applyTransactionWithResult(gp *core.GasPool, state *state.StateDB,
 			return nil, err
 		}
 		vmConfig = vm.Config{
-			Debug:  true,
 			Tracer: tracer,
 		}
 	}
-	msg, err := core.TransactionToMessage(tx, types.MakeSigner(chainConfig, header.Number), header.BaseFee)
+	msg, err := core.TransactionToMessage(tx, types.MakeSigner(chainConfig, header.Number, header.Time), header.BaseFee)
 	if err != nil {
 		return nil, err
 	}
@@ -363,7 +362,6 @@ func (s *API) SearcherCall(ctx context.Context, args CallArgs) (*CallResult, err
 			if err != nil {
 				return nil, err
 			}
-			vmConfig.Debug = true
 			vmConfig.Tracer = tracer
 		}
 		evm := vm.NewEVM(blockContext, core.NewEVMTxContext(msg), state, s.chain.Config(), vmConfig)
