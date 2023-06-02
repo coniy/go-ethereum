@@ -38,6 +38,37 @@ func NewSearcherAPI(b ethapi.Backend, chain *core.BlockChain) *API {
 	}
 }
 
+func (s *API) SearcherChainData(ctx context.Context, args ChainDataArgs) (*ChainDataResult, error) {
+	if args.StateBlockNumberOrHash == (rpc.BlockNumberOrHash{}) {
+		args.StateBlockNumberOrHash = rpc.BlockNumberOrHashWithNumber(rpc.LatestBlockNumber)
+	}
+	db, parent, err := s.b.StateAndHeaderByNumberOrHash(ctx, args.StateBlockNumberOrHash)
+	if db == nil || err != nil {
+		return nil, err
+	}
+	res := &ChainDataResult{
+		Header:      parent,
+		NextBaseFee: misc.CalcBaseFee(s.chain.Config(), parent),
+	}
+	if len(args.Accounts) > 0 {
+		res.Accounts = make(map[common.Address]*Account)
+	}
+	for account, keys := range args.Accounts {
+		obj := db.GetOrNewStateObject(common.Address{})
+		res.Accounts[account] = &Account{
+			Balance: obj.Balance(),
+			Nonce:   obj.Nonce(),
+		}
+		if len(keys) > 0 {
+			res.Accounts[account].State = make(map[common.Hash]common.Hash)
+			for _, key := range keys {
+				res.Accounts[account].State[key] = obj.GetState(db.Database(), key)
+			}
+		}
+	}
+	return res, nil
+}
+
 // SearcherCallBundle will simulate a bundle of transactions at the top of a given block
 // number with the state of another (or the same) block. This can be used to
 // simulate future blocks with the current state, or it can be used to simulate
@@ -67,13 +98,13 @@ func (s *API) SearcherCallBundle(ctx context.Context, args CallBundleArgs) (*Cal
 		txs = append(txs, tx)
 	}
 
-	state, parent, err := s.b.StateAndHeaderByNumberOrHash(ctx, args.StateBlockNumberOrHash)
-	if state == nil || err != nil {
+	db, parent, err := s.b.StateAndHeaderByNumberOrHash(ctx, args.StateBlockNumberOrHash)
+	if db == nil || err != nil {
 		return nil, err
 	}
 
 	// override state
-	if err := args.StateOverrides.Apply(state); err != nil {
+	if err := args.StateOverrides.Apply(db); err != nil {
 		return nil, err
 	}
 
@@ -110,7 +141,7 @@ func (s *API) SearcherCallBundle(ctx context.Context, args CallBundleArgs) (*Cal
 	defer cancel()
 
 	ret := &CallBundleResult{
-		CoinbaseDiff:      state.GetBalance(header.Coinbase),
+		CoinbaseDiff:      db.GetBalance(header.Coinbase),
 		GasFees:           new(big.Int),
 		EthSentToCoinbase: new(big.Int),
 		StateBlockNumber:  parent.Number.Int64(),
@@ -122,8 +153,8 @@ func (s *API) SearcherCallBundle(ctx context.Context, args CallBundleArgs) (*Cal
 			return nil, err
 		}
 
-		state.SetTxContext(tx.Hash(), i)
-		txResult, err := s.applyTransactionWithResult(gp, state, header, tx, args.EnableCallTracer)
+		db.SetTxContext(tx.Hash(), i)
+		txResult, err := s.applyTransactionWithResult(gp, db, header, tx, args.EnableCallTracer)
 		if err != nil {
 			return nil, fmt.Errorf("tx %s error: %w", tx.Hash(), err)
 		}
@@ -133,7 +164,7 @@ func (s *API) SearcherCallBundle(ctx context.Context, args CallBundleArgs) (*Cal
 		ret.Txs = append(ret.Txs, txResult)
 	}
 
-	ret.CoinbaseDiff = new(big.Int).Sub(state.GetBalance(header.Coinbase), ret.CoinbaseDiff)
+	ret.CoinbaseDiff = new(big.Int).Sub(db.GetBalance(header.Coinbase), ret.CoinbaseDiff)
 	ret.EthSentToCoinbase = new(big.Int).Sub(ret.CoinbaseDiff, ret.GasFees)
 	ret.BundleGasPrice = new(big.Int).Div(ret.CoinbaseDiff, big.NewInt(int64(ret.TotalGasUsed)))
 	ret.BundleHash = common.BytesToHash(bundleHash.Sum(nil))
