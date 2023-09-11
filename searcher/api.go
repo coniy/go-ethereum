@@ -10,7 +10,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/common/math"
-	"github.com/ethereum/go-ethereum/consensus/misc"
+	"github.com/ethereum/go-ethereum/consensus/misc/eip1559"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -48,7 +48,7 @@ func (s *API) SearcherChainData(ctx context.Context, args ChainDataArgs) (*Chain
 	}
 	res := &ChainDataResult{
 		Header:      parent,
-		NextBaseFee: misc.CalcBaseFee(s.chain.Config(), parent),
+		NextBaseFee: eip1559.CalcBaseFee(s.chain.Config(), parent),
 	}
 	if len(args.Accounts) > 0 {
 		res.Accounts = make(map[common.Address]*Account)
@@ -62,7 +62,7 @@ func (s *API) SearcherChainData(ctx context.Context, args ChainDataArgs) (*Chain
 		if len(keys) > 0 {
 			res.Accounts[account].State = make(map[common.Hash]common.Hash)
 			for _, key := range keys {
-				res.Accounts[account].State[key] = obj.GetState(db.Database(), key)
+				res.Accounts[account].State[key] = obj.GetState(key)
 			}
 		}
 	}
@@ -117,7 +117,7 @@ func (s *API) SearcherCallBundle(ctx context.Context, args CallBundleArgs) (*Cal
 		Coinbase:   parent.Coinbase,
 	}
 	if s.b.ChainConfig().IsLondon(big.NewInt(parent.Number.Int64())) {
-		header.BaseFee = misc.CalcBaseFee(s.b.ChainConfig(), parent)
+		header.BaseFee = eip1559.CalcBaseFee(s.b.ChainConfig(), parent)
 	}
 
 	// header overrides
