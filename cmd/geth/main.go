@@ -89,7 +89,6 @@ var (
 		utils.SnapshotFlag,
 		utils.TxLookupLimitFlag,
 		utils.TransactionHistoryFlag,
-		utils.StateSchemeFlag,
 		utils.StateHistoryFlag,
 		utils.LightServeFlag,
 		utils.LightIngressFlag,
@@ -145,7 +144,7 @@ var (
 		utils.GpoMaxGasPriceFlag,
 		utils.GpoIgnoreGasPriceFlag,
 		configFileFlag,
-	}, utils.NetworkFlags, utils.DatabasePathFlags)
+	}, utils.NetworkFlags, utils.DatabaseFlags)
 
 	rpcFlags = []cli.Flag{
 		utils.HTTPEnabledFlag,
@@ -235,6 +234,9 @@ func init() {
 		// See verkle.go
 		verkleCommand,
 	}
+	if logTestCommand != nil {
+		app.Commands = append(app.Commands, logTestCommand)
+	}
 	sort.Sort(cli.CommandsByName(app.Commands))
 
 	app.Flags = flags.Merge(
@@ -244,11 +246,16 @@ func init() {
 		debug.Flags,
 		metricsFlags,
 	)
+	flags.AutoEnvVars(app.Flags, "GETH")
 
 	app.Before = func(ctx *cli.Context) error {
 		maxprocs.Set() // Automatically set GOMAXPROCS to match Linux container CPU quota.
 		flags.MigrateGlobalFlags(ctx)
-		return debug.Setup(ctx)
+		if err := debug.Setup(ctx); err != nil {
+			return err
+		}
+		flags.CheckEnvVars(ctx, app.Flags, "GETH")
+		return nil
 	}
 	app.After = func(ctx *cli.Context) error {
 		debug.Exit()
