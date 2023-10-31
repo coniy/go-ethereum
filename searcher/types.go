@@ -155,6 +155,7 @@ type CallArgs struct {
 	Txs                    []*CallMsg            `json:"txs,omitempty"`
 	StateBlockNumberOrHash rpc.BlockNumberOrHash `json:"stateBlockNumber,omitempty"`
 	Timeout                *int64                `json:"timeout,omitempty"`
+	EnableBaseFee          bool                  `json:"enableBaseFee,omitempty"`
 	EnableCallTracer       bool                  `json:"enableCallTracer,omitempty"`
 	BlockOverrides         *BlockOverrides       `json:"blockOverrides,omitempty"`
 	StateOverrides         *StateOverride        `json:"stateOverrides,omitempty"`
