@@ -7,6 +7,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/rpc"
+	"github.com/holiman/uint256"
 	"math/big"
 )
 
@@ -36,7 +37,7 @@ func (diff *StateOverride) Apply(state *state.StateDB) error {
 		}
 		// Override account balance.
 		if account.Balance != nil {
-			state.SetBalance(addr, account.Balance)
+			state.SetBalance(addr, uint256.MustFromBig(account.Balance))
 		}
 		if account.State != nil && account.StateDiff != nil {
 			return fmt.Errorf("account %s has both 'state' and 'stateDiff'", addr.Hex())
@@ -195,9 +196,9 @@ type CallFrame struct {
 	Type         CallType       `json:"type,omitempty"`
 	From         common.Address `json:"from,omitempty"`
 	To           common.Address `json:"to,omitempty"`
-	Value        *hexutil.Big   `json:"value,omitempty"`
-	Gas          hexutil.Uint64 `json:"gas,omitempty"`
-	GasUsed      hexutil.Uint64 `json:"gasUsed,omitempty"`
+	Value        *big.Int       `json:"value,omitempty"`
+	Gas          uint64         `json:"gas,omitempty"`
+	GasUsed      uint64         `json:"gasUsed,omitempty"`
 	Error        string         `json:"error,omitempty"`
 	RevertReason string         `json:"revertReason,omitempty"`
 	Input        hexutil.Bytes  `json:"input,omitempty"`

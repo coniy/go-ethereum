@@ -46,21 +46,20 @@ func (s *API) SearcherChainData(ctx context.Context, args ChainDataArgs) (*Chain
 	}
 	res := &ChainDataResult{
 		Header:      parent,
-		NextBaseFee: eip1559.CalcBaseFee(s.chain.Config(), parent),
+		NextBaseFee: eip1559.CalcBaseFee(s.b.ChainConfig(), parent),
 	}
 	if len(args.Accounts) > 0 {
 		res.Accounts = make(map[common.Address]*Account)
 	}
 	for account, keys := range args.Accounts {
-		obj := db.GetOrNewStateObject(account)
 		res.Accounts[account] = &Account{
-			Balance: obj.Balance(),
-			Nonce:   obj.Nonce(),
+			Balance: db.GetBalance(account).ToBig(),
+			Nonce:   db.GetNonce(account),
 		}
 		if len(keys) > 0 {
 			res.Accounts[account].State = make(map[common.Hash]common.Hash)
 			for _, key := range keys {
-				res.Accounts[account].State[key] = obj.GetState(key)
+				res.Accounts[account].State[key] = db.GetState(account, key)
 			}
 		}
 	}
@@ -99,7 +98,7 @@ func (s *API) SearcherCall(ctx context.Context, args CallArgs) (*CallResult, err
 		Difficulty: new(big.Int).Set(parent.Difficulty),
 		Coinbase:   parent.Coinbase,
 	}
-	if s.b.ChainConfig().IsLondon(big.NewInt(parent.Number.Int64())) {
+	if s.b.ChainConfig().IsLondon(parent.Number) {
 		header.BaseFee = eip1559.CalcBaseFee(s.b.ChainConfig(), parent)
 	}
 
@@ -175,9 +174,9 @@ func (s *API) SearcherCall(ctx context.Context, args CallArgs) (*CallResult, err
 		vmConfig := vm.Config{
 			NoBaseFee: !args.EnableBaseFee,
 		}
-		var tracer *combinedTracer
+		var tracer *Tracer
 		if args.EnableCallTracer || callMsg.EnableAccessList {
-			cfg := combinedTracerConfig{
+			cfg := TracerConfig{
 				WithCall:       args.EnableCallTracer,
 				WithLog:        args.EnableCallTracer,
 				WithAccessList: callMsg.EnableAccessList,
@@ -196,7 +195,7 @@ func (s *API) SearcherCall(ctx context.Context, args CallArgs) (*CallResult, err
 				}
 				cfg.AccessListExcludes[header.Coinbase] = struct{}{}
 			}
-			tracer = newCombinedTracer(cfg)
+			tracer = NewCombinedTracer(cfg)
 			vmConfig.Tracer = tracer
 		}
 		evm := vm.NewEVM(blockContext, core.NewEVMTxContext(msg), db, s.chain.Config(), vmConfig)
@@ -285,7 +284,7 @@ func (s *API) SearcherCallBundle(ctx context.Context, args CallBundleArgs) (*Cal
 		Difficulty: new(big.Int).Set(parent.Difficulty),
 		Coinbase:   parent.Coinbase,
 	}
-	if s.b.ChainConfig().IsLondon(big.NewInt(parent.Number.Int64())) {
+	if s.b.ChainConfig().IsLondon(parent.Number) {
 		header.BaseFee = eip1559.CalcBaseFee(s.b.ChainConfig(), parent)
 	}
 
@@ -310,7 +309,7 @@ func (s *API) SearcherCallBundle(ctx context.Context, args CallBundleArgs) (*Cal
 	defer cancel()
 
 	ret := &CallBundleResult{
-		CoinbaseDiff:      db.GetBalance(header.Coinbase),
+		CoinbaseDiff:      db.GetBalance(header.Coinbase).ToBig(),
 		GasFees:           new(big.Int),
 		EthSentToCoinbase: new(big.Int),
 		StateBlockNumber:  parent.Number.Int64(),
@@ -333,7 +332,7 @@ func (s *API) SearcherCallBundle(ctx context.Context, args CallBundleArgs) (*Cal
 		ret.Txs = append(ret.Txs, txResult)
 	}
 
-	ret.CoinbaseDiff = new(big.Int).Sub(db.GetBalance(header.Coinbase), ret.CoinbaseDiff)
+	ret.CoinbaseDiff = new(big.Int).Sub(db.GetBalance(header.Coinbase).ToBig(), ret.CoinbaseDiff)
 	ret.EthSentToCoinbase = new(big.Int).Sub(ret.CoinbaseDiff, ret.GasFees)
 	ret.BundleGasPrice = new(big.Int).Div(ret.CoinbaseDiff, big.NewInt(int64(ret.TotalGasUsed)))
 	ret.BundleHash = common.BytesToHash(bundleHash.Sum(nil))
@@ -348,10 +347,10 @@ func (s *API) applyTransactionWithResult(gp *core.GasPool, state *state.StateDB,
 	if err != nil {
 		return nil, err
 	}
-	var tracer *combinedTracer
+	var tracer *Tracer
 	vmConfig := *s.chain.GetVMConfig()
 	if args.EnableCallTracer || args.EnableAccessList {
-		cfg := combinedTracerConfig{
+		cfg := TracerConfig{
 			WithCall:       args.EnableCallTracer,
 			WithLog:        args.EnableCallTracer,
 			WithAccessList: args.EnableAccessList,
@@ -370,7 +369,7 @@ func (s *API) applyTransactionWithResult(gp *core.GasPool, state *state.StateDB,
 			}
 			cfg.AccessListExcludes[header.Coinbase] = struct{}{}
 		}
-		tracer = newCombinedTracer(cfg)
+		tracer = NewCombinedTracer(cfg)
 		vmConfig.Tracer = tracer
 	}
 	// Create a new context to be used in the EVM environment
@@ -421,7 +420,7 @@ func (s *API) applyTransactionWithResult(gp *core.GasPool, state *state.StateDB,
 		GasUsed:      receipt.GasUsed,
 		ReturnData:   result.ReturnData,
 		Logs:         receipt.Logs,
-		CoinbaseDiff: new(big.Int).Sub(state.GetBalance(header.Coinbase), coinbaseBalanceBeforeTx),
+		CoinbaseDiff: new(big.Int).Sub(state.GetBalance(header.Coinbase).ToBig(), coinbaseBalanceBeforeTx.ToBig()),
 		CallMsg: &CallMsg{
 			From:       msg.From,
 			To:         msg.To,
