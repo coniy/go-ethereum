@@ -109,9 +109,6 @@ func (s *API) SearcherCall(ctx context.Context, args CallArgs) (*CallResult, err
 	// Block overrides
 	args.BlockOverrides.Apply(&blockCtx)
 
-	// RPC Call gas cap
-	globalGasCap := s.b.RPCGasCap()
-
 	// Gas pool
 	gp := new(core.GasPool).AddGas(math.MaxUint64)
 
@@ -165,10 +162,7 @@ func (s *API) SearcherCall(ctx context.Context, args CallArgs) (*CallResult, err
 			Data:                 &callMsg.Data,
 			AccessList:           &callMsg.AccessList,
 		}
-		msg, err := txArgs.ToMessage(globalGasCap, blockCtx.BaseFee)
-		if err != nil {
-			return nil, err
-		}
+		msg := txArgs.ToMessage(blockCtx.BaseFee)
 		if callMsg.Nonce != nil {
 			msg.Nonce = *callMsg.Nonce
 			msg.SkipAccountChecks = false
@@ -200,7 +194,7 @@ func (s *API) SearcherCall(ctx context.Context, args CallArgs) (*CallResult, err
 				cfg.AccessListExcludes[blockCtx.Coinbase] = struct{}{}
 			}
 			tracer = NewCombinedTracer(cfg)
-			vmConfig.Tracer = tracer
+			vmConfig.Tracer = tracer.Hooks()
 		}
 		evm := vm.NewEVM(blockCtx, core.NewEVMTxContext(msg), db, s.chain.Config(), vmConfig)
 
@@ -378,7 +372,7 @@ func (s *API) applyTransactionWithResult(gp *core.GasPool, state *state.StateDB,
 			cfg.AccessListExcludes[blockCtx.Coinbase] = struct{}{}
 		}
 		tracer = NewCombinedTracer(cfg)
-		vmConfig.Tracer = tracer
+		vmConfig.Tracer = tracer.Hooks()
 	}
 	// Create a new context to be used in the EVM environment
 	evm := vm.NewEVM(blockCtx, core.NewEVMTxContext(msg), state, chainConfig, vmConfig)

@@ -5,6 +5,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/state"
+	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/rpc"
@@ -38,7 +39,7 @@ func (diff *StateOverride) Apply(state *state.StateDB) error {
 		}
 		// Override account balance.
 		if account.Balance != nil {
-			state.SetBalance(addr, uint256.MustFromBig(account.Balance))
+			state.SetBalance(addr, uint256.MustFromBig(account.Balance), tracing.BalanceChangeUnspecified)
 		}
 		if account.State != nil && account.StateDiff != nil {
 			return fmt.Errorf("account %s has both 'state' and 'stateDiff'", addr.Hex())
@@ -229,9 +230,10 @@ func (f *CallFrame) ToLogs() []*types.Log {
 }
 
 type CallLog struct {
-	Address common.Address `json:"address,omitempty"`
-	Topics  []common.Hash  `json:"topics,omitempty"`
-	Data    hexutil.Bytes  `json:"data,omitempty"`
+	Address  common.Address `json:"address,omitempty"`
+	Topics   []common.Hash  `json:"topics,omitempty"`
+	Data     hexutil.Bytes  `json:"data,omitempty"`
+	Position int            `json:"position,omitempty"`
 }
 
 func (l *CallLog) ToLog() *types.Log {

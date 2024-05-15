@@ -1,17 +1,14 @@
 package searcher
 
 import (
-	"encoding/json"
 	"errors"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
-	"github.com/ethereum/go-ethereum/eth/tracers"
-	"github.com/ethereum/go-ethereum/log"
 	"github.com/holiman/uint256"
 	"math/big"
-	"sync/atomic"
 )
 
 func (f *CallFrame) processOutput(output []byte, err error) {
@@ -76,17 +73,12 @@ func (al accessList) accessList() types.AccessList {
 	return acl
 }
 
-var _ tracers.Tracer = (*Tracer)(nil)
-
 type Tracer struct {
 	config    TracerConfig
-	env       *vm.EVM
+	env       *tracing.VMContext
 	callstack []*CallFrame
 	gasLimit  uint64
-	usedGas   uint64
-	interrupt atomic.Bool // Atomic flag to signal execution interruption
-	reason    error       // Textual reason for the interruption
-	list      accessList  // Set of accounts and storage slots touched
+	list      accessList // Set of accounts and storage slots touched
 	ops       []Operation
 }
 
@@ -98,8 +90,6 @@ type TracerConfig struct {
 	WithOpcode         bool                        `json:"withOpcode,omitempty"`
 	WithMemory         bool                        `json:"withMemory,omitempty"`
 	WithStack          bool                        `json:"withStack,omitempty"`
-	WithStorage        bool                        `json:"withStorage,omitempty"`
-	WithReturnData     bool                        `json:"withReturnData,omitempty"`
 }
 
 type Operation struct {
@@ -131,38 +121,55 @@ func NewCombinedTracer(config TracerConfig) *Tracer {
 	return tracer
 }
 
-func (t *Tracer) CaptureTxStart(gasLimit uint64) {
-	t.gasLimit = gasLimit
+func (t *Tracer) Hooks() *tracing.Hooks {
+	h := new(tracing.Hooks)
+	if t.config.WithCall {
+		h.OnTxStart = t.OnTxStart
+		h.OnTxEnd = t.OnTxEnd
+		h.OnEnter = t.OnEnter
+		h.OnExit = t.OnExit
+		if t.config.WithLog {
+			h.OnLog = t.OnLog
+		}
+	}
+	if t.config.WithAccessList {
+		h.OnEnter = t.OnEnter
+		h.OnExit = t.OnExit
+	}
+	if t.config.WithOpcode {
+		h.OnTxStart = t.OnTxStart
+		h.OnTxEnd = t.OnTxEnd
+	}
+	return h
 }
 
-// CaptureStart implements the EVMLogger interface to initialize the tracing operation.
-func (t *Tracer) CaptureStart(env *vm.EVM, from common.Address, to common.Address, create bool, input []byte, gas uint64, value *big.Int) {
-	t.env = env
+func (t *Tracer) OnTxStart(env *tracing.VMContext, tx *types.Transaction, from common.Address) {
+	t.gasLimit = tx.Gas()
+}
+
+func (t *Tracer) OnTxEnd(receipt *types.Receipt, err error) {
+	if err != nil {
+		return
+	}
 	if t.config.WithCall {
+		t.callstack[0].GasUsed = receipt.GasUsed
+	}
+}
+
+// OnEnter is called when EVM enters a new scope (via call, create or selfdestruct).
+func (t *Tracer) OnEnter(depth int, typ byte, from common.Address, to common.Address, input []byte, gas uint64, value *big.Int) {
+	if depth == 0 {
 		t.callstack[0] = &CallFrame{
-			Type:  CallType(vm.CALL.String()),
+			Type:  CallType(vm.OpCode(typ).String()),
 			From:  from,
 			To:    to,
 			Value: value,
 			Gas:   t.gasLimit,
 			Input: common.CopyBytes(input),
 		}
-		if create {
-			t.callstack[0].Type = CallType(vm.CREATE.String())
-		}
-	}
-}
-
-// CaptureEnter is called when EVM enters a new scope (via call, create or selfdestruct).
-func (t *Tracer) CaptureEnter(typ vm.OpCode, from common.Address, to common.Address, input []byte, gas uint64, value *big.Int) {
-	// Skip if tracing was interrupted
-	if t.interrupt.Load() {
-		return
-	}
-
-	if t.config.WithCall {
+	} else {
 		t.callstack = append(t.callstack, &CallFrame{
-			Type:  CallType(typ.String()),
+			Type:  CallType(vm.OpCode(typ).String()),
 			From:  from,
 			To:    to,
 			Value: value,
@@ -172,47 +179,69 @@ func (t *Tracer) CaptureEnter(typ vm.OpCode, from common.Address, to common.Addr
 	}
 }
 
-// CaptureState implements the EVMLogger interface to trace a single step of VM execution.
-func (t *Tracer) CaptureState(pc uint64, op vm.OpCode, gas, cost uint64, scope *vm.ScopeContext, rData []byte, depth int, err error) {
-	// Skip if tracing was interrupted
-	if t.interrupt.Load() {
+func (t *Tracer) OnExit(depth int, output []byte, gasUsed uint64, err error, reverted bool) {
+	if depth == 0 {
+		// capture end
+		if len(t.callstack) != 1 {
+			return
+		}
+		t.callstack[0].GasUsed = gasUsed
+		t.callstack[0].processOutput(output, err)
 		return
 	}
 
-	stack := scope.Stack
-	stackData := stack.Data()
-	stackLen := len(stackData)
+	size := len(t.callstack)
+	if size <= 1 {
+		return
+	}
+	// Pop call.
+	call := t.callstack[size-1]
+	t.callstack = t.callstack[:size-1]
+	size -= 1
+
+	call.GasUsed = gasUsed
+	call.processOutput(output, err)
+	// Nest call into parent.
+	t.callstack[size-1].Calls = append(t.callstack[size-1].Calls, call)
+}
+
+// OnOpcode logs a new structured log message and pushes it out to the environment
+// also tracks SLOAD/SSTORE ops to track storage change.
+func (t *Tracer) OnOpcode(pc uint64, opcode byte, gas, cost uint64, scope tracing.OpContext, rData []byte, depth int, err error) {
+
+	op := vm.OpCode(opcode)
+	stack := scope.StackData()
+	stackLen := len(scope.StackData())
 
 	if t.config.WithOpcode {
 		// Copy a snapshot of the current memory state to a new buffer
 		var mem []byte
+		memory := scope.MemoryData()
 		if t.config.WithMemory {
-			mem = make([]byte, len(scope.Memory.Data()))
-			copy(mem, scope.Memory.Data())
+			mem = make([]byte, len(memory))
+			copy(mem, memory)
 		}
 		// Copy a snapshot of the current stack state to a new buffer
 		var stck []uint256.Int
-		if !t.config.WithStack {
+		if t.config.WithStack {
 			stck = make([]uint256.Int, stackLen)
-			for i, item := range stackData {
-				stck[i] = item
-			}
+			copy(stck, stack)
 		}
 
 		// Copy a snapshot of the current storage to a new container
 		var storage map[common.Hash]common.Hash
-		if !t.config.WithStorage && (op == vm.SLOAD || op == vm.SSTORE) {
+		if op == vm.SLOAD || op == vm.SSTORE {
 			// capture SLOAD opcodes and record the read entry in the local storage
 			if op == vm.SLOAD && stackLen >= 1 {
-				slot := common.Hash(stackData[stackLen-1].Bytes32())
-				value := t.env.StateDB.GetState(scope.Contract.Address(), slot)
+				slot := common.Hash(stack[stackLen-1].Bytes32())
+				value := t.env.StateDB.GetState(scope.Address(), slot)
 				storage = map[common.Hash]common.Hash{
 					slot: value,
 				}
 			} else if op == vm.SSTORE && stackLen >= 2 {
 				// capture SSTORE opcodes and record the written entry in the local storage.
-				slot := common.Hash(stackData[stackLen-1].Bytes32())
-				value := common.Hash(stackData[stackLen-2].Bytes32())
+				slot := common.Hash(stack[stackLen-1].Bytes32())
+				value := common.Hash(stack[stackLen-2].Bytes32())
 				storage = map[common.Hash]common.Hash{
 					slot: value,
 				}
@@ -220,10 +249,8 @@ func (t *Tracer) CaptureState(pc uint64, op vm.OpCode, gas, cost uint64, scope *
 		}
 
 		var rdata []byte
-		if t.config.WithReturnData {
-			rdata = make([]byte, len(rData))
-			copy(rdata, rData)
-		}
+		rdata = make([]byte, len(rData))
+		copy(rdata, rData)
 
 		var errString string
 		if err != nil {
@@ -246,108 +273,41 @@ func (t *Tracer) CaptureState(pc uint64, op vm.OpCode, gas, cost uint64, scope *
 		})
 	}
 
-	// Only logs need to be captured via opcode processing
-	if t.config.WithLog {
-		switch op {
-		case vm.LOG0, vm.LOG1, vm.LOG2, vm.LOG3, vm.LOG4:
-			size := int(op - vm.LOG0)
-			if stackLen >= size+2 {
-				// Don't modify the stack
-				mStart := stackData[len(stackData)-1]
-				mSize := stackData[len(stackData)-2]
-				topics := make([]common.Hash, size)
-				for i := 0; i < size; i++ {
-					topic := stackData[len(stackData)-2-(i+1)]
-					topics[i] = topic.Bytes32()
-				}
-
-				data, err := tracers.GetMemoryCopyPadded(scope.Memory, int64(mStart.Uint64()), int64(mSize.Uint64()))
-				if err != nil {
-					// mSize was unrealistically large
-					log.Warn("failed to copy CREATE2 input", "err", err, "tracer", "callTracer", "offset", mStart, "size", mSize)
-					return
-				}
-
-				lastFrame := t.callstack[len(t.callstack)-1]
-				lastFrame.Logs = append(lastFrame.Logs, &CallLog{
-					Address: scope.Contract.Address(),
-					Topics:  topics,
-					Data:    data,
-				})
-			}
-		}
-	}
 	if t.config.WithAccessList {
-		if (op == vm.SLOAD || op == vm.SSTORE) && stackLen >= 1 {
-			addr := scope.Contract.Address()
-			if _, ok := t.config.AccessListExcludes[addr]; !ok {
-				slot := common.Hash(stackData[stackLen-1].Bytes32())
-				t.list.addSlot(addr, slot)
+		if op == vm.SLOAD || op == vm.SSTORE {
+			if stackLen >= 1 {
+				addr := scope.Address()
+				if _, ok := t.config.AccessListExcludes[addr]; !ok {
+					slot := common.Hash(stack[stackLen-1].Bytes32())
+					t.list.addSlot(addr, slot)
+				}
+			}
+		} else if op == vm.BALANCE || op == vm.EXTCODESIZE || op == vm.EXTCODECOPY || op == vm.EXTCODEHASH || op == vm.SELFDESTRUCT {
+			if stackLen >= 1 {
+				addr := common.Address(stack[stackLen-1].Bytes20())
+				if _, ok := t.config.AccessListExcludes[addr]; !ok {
+					t.list.addAddress(addr)
+				}
+			}
+		} else if op == vm.CALL || op == vm.STATICCALL || op == vm.DELEGATECALL || op == vm.CALLCODE {
+			if stackLen >= 5 {
+				addr := common.Address(stack[stackLen-2].Bytes20())
+				if _, ok := t.config.AccessListExcludes[addr]; !ok {
+					t.list.addAddress(addr)
+				}
 			}
 		}
-		if (op == vm.BALANCE || op == vm.EXTCODESIZE || op == vm.EXTCODECOPY || op == vm.EXTCODEHASH || op == vm.SELFDESTRUCT) && stackLen >= 1 {
-			addr := common.Address(stackData[stackLen-1].Bytes20())
-			if _, ok := t.config.AccessListExcludes[addr]; !ok {
-				t.list.addAddress(addr)
-			}
-		}
-		if (op == vm.CALL || op == vm.STATICCALL || op == vm.DELEGATECALL || op == vm.CALLCODE) && stackLen >= 5 {
-			addr := common.Address(stackData[stackLen-2].Bytes20())
-			if _, ok := t.config.AccessListExcludes[addr]; !ok {
-				t.list.addAddress(addr)
-			}
-		}
 	}
 }
 
-// CaptureExit is called when EVM exits a scope, even if the scope didn't
-// execute any code.
-func (t *Tracer) CaptureExit(output []byte, gasUsed uint64, err error) {
-	if t.config.WithCall {
-		size := len(t.callstack)
-		if size <= 1 {
-			return
-		}
-		// pop call
-		call := t.callstack[size-1]
-		t.callstack = t.callstack[:size-1]
-		size -= 1
-
-		call.GasUsed = gasUsed
-		call.processOutput(output, err)
-		t.callstack[size-1].Calls = append(t.callstack[size-1].Calls, call)
+func (t *Tracer) OnLog(log *types.Log) {
+	l := &CallLog{
+		Address:  log.Address,
+		Topics:   log.Topics,
+		Data:     log.Data,
+		Position: len(t.callstack[len(t.callstack)-1].Calls),
 	}
-}
-
-// CaptureEnd is called after the call finishes to finalize the tracing.
-func (t *Tracer) CaptureEnd(output []byte, gasUsed uint64, err error) {
-	if t.config.WithCall {
-		t.callstack[0].processOutput(output, err)
-	}
-}
-
-func (t *Tracer) CaptureTxEnd(restGas uint64) {
-	t.usedGas = t.gasLimit - restGas
-	if t.config.WithCall {
-		t.callstack[0].GasUsed = t.usedGas
-	}
-}
-
-func (t *Tracer) CaptureFault(pc uint64, op vm.OpCode, gas, cost uint64, scope *vm.ScopeContext, depth int, err error) {
-}
-
-// GetResult returns the json-encoded nested list of call traces, and any
-// error arising from the encoding or forceful termination (via `Stop`).
-func (t *Tracer) GetResult() (json.RawMessage, error) {
-	if len(t.callstack) != 1 {
-		return nil, errors.New("incorrect number of top-level calls")
-	}
-
-	res, err := json.Marshal(t.callstack[0])
-	if err != nil {
-		return nil, err
-	}
-	return res, t.reason
+	t.callstack[len(t.callstack)-1].Logs = append(t.callstack[len(t.callstack)-1].Logs, l)
 }
 
 func (t *Tracer) CallFrame() *CallFrame {
@@ -361,10 +321,4 @@ func (t *Tracer) AccessList() types.AccessList {
 
 func (t *Tracer) Operations() []Operation {
 	return t.ops
-}
-
-// Stop terminates execution of the tracer at the first opportune moment.
-func (t *Tracer) Stop(err error) {
-	t.reason = err
-	t.interrupt.Store(true)
 }
