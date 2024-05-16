@@ -15,6 +15,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/eth/ethconfig"
 	"github.com/ethereum/go-ethereum/internal/ethapi"
 	"github.com/ethereum/go-ethereum/rpc"
 	"golang.org/x/crypto/sha3"
@@ -161,6 +162,10 @@ func (s *API) SearcherCall(ctx context.Context, args CallArgs) (*CallResult, err
 			Nonce:                (*hexutil.Uint64)(callMsg.Nonce),
 			Data:                 &callMsg.Data,
 			AccessList:           &callMsg.AccessList,
+		}
+
+		if err := txArgs.CallDefaults(ethconfig.Defaults.RPCGasCap, blockCtx.BaseFee, s.chain.Config().ChainID); err != nil {
+			return nil, err
 		}
 		msg := txArgs.ToMessage(blockCtx.BaseFee)
 		if callMsg.Nonce != nil {
