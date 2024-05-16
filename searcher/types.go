@@ -21,7 +21,7 @@ type OverrideAccount struct {
 	StateDiff *map[common.Hash]common.Hash `json:"stateDiff,omitempty"`
 }
 
-type StateOverride map[common.Address]OverrideAccount
+type StateOverride map[common.Address]*OverrideAccount
 
 // Apply overrides the fields of specified accounts into the given state.
 func (diff *StateOverride) Apply(state *state.StateDB) error {
