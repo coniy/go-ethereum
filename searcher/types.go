@@ -230,10 +230,12 @@ func (f *CallFrame) ToLogs() []*types.Log {
 }
 
 type CallLog struct {
-	Address  common.Address `json:"address,omitempty"`
-	Topics   []common.Hash  `json:"topics,omitempty"`
-	Data     hexutil.Bytes  `json:"data,omitempty"`
-	Position int            `json:"position,omitempty"`
+	Address common.Address `json:"address,omitempty"`
+	Topics  []common.Hash  `json:"topics,omitempty"`
+	Data    hexutil.Bytes  `json:"data,omitempty"`
+	// Position of the log relative to subcalls within the same trace
+	// See https://github.com/ethereum/go-ethereum/pull/28389 for details
+	Position int `json:"position,omitempty"`
 }
 
 func (l *CallLog) ToLog() *types.Log {

@@ -18,11 +18,8 @@ func (f *CallFrame) processOutput(output []byte, err error) {
 		return
 	}
 	f.Error = err.Error()
-	if !errors.Is(err, vm.ErrExecutionReverted) || len(output) == 0 {
-		return
-	}
 	f.Output = output
-	if len(output) < 4 {
+	if !errors.Is(err, vm.ErrExecutionReverted) || len(output) < 4 {
 		return
 	}
 	if unpacked, err := abi.UnpackRevert(output); err == nil {
@@ -84,7 +81,6 @@ type Tracer struct {
 
 type TracerConfig struct {
 	WithCall           bool                        `json:"withCall,omitempty"`
-	WithLog            bool                        `json:"withLog,omitempty"`
 	WithAccessList     bool                        `json:"withAccessList,omitempty"`
 	AccessListExcludes map[common.Address]struct{} `json:"accessListExcludes,omitempty"`
 	WithOpcode         bool                        `json:"withOpcode,omitempty"`
@@ -128,17 +124,13 @@ func (t *Tracer) Hooks() *tracing.Hooks {
 		h.OnTxEnd = t.OnTxEnd
 		h.OnEnter = t.OnEnter
 		h.OnExit = t.OnExit
-		if t.config.WithLog {
-			h.OnLog = t.OnLog
-		}
+		h.OnLog = t.OnLog
 	}
 	if t.config.WithAccessList {
-		h.OnEnter = t.OnEnter
-		h.OnExit = t.OnExit
+		h.OnOpcode = t.OnOpcode
 	}
 	if t.config.WithOpcode {
-		h.OnTxStart = t.OnTxStart
-		h.OnTxEnd = t.OnTxEnd
+		h.OnOpcode = t.OnOpcode
 	}
 	return h
 }
@@ -208,7 +200,6 @@ func (t *Tracer) OnExit(depth int, output []byte, gasUsed uint64, err error, rev
 // OnOpcode logs a new structured log message and pushes it out to the environment
 // also tracks SLOAD/SSTORE ops to track storage change.
 func (t *Tracer) OnOpcode(pc uint64, opcode byte, gas, cost uint64, scope tracing.OpContext, rData []byte, depth int, err error) {
-
 	op := vm.OpCode(opcode)
 	stack := scope.StackData()
 	stackLen := len(scope.StackData())

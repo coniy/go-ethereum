@@ -181,7 +181,6 @@ func (s *API) SearcherCall(ctx context.Context, args CallArgs) (*CallResult, err
 		if args.EnableCallTracer || callMsg.EnableAccessList {
 			cfg := TracerConfig{
 				WithCall:       args.EnableCallTracer,
-				WithLog:        args.EnableCallTracer,
 				WithAccessList: callMsg.EnableAccessList,
 			}
 			if cfg.WithAccessList {
@@ -359,7 +358,6 @@ func (s *API) applyTransactionWithResult(gp *core.GasPool, state *state.StateDB,
 	if args.EnableCallTracer || args.EnableAccessList {
 		cfg := TracerConfig{
 			WithCall:       args.EnableCallTracer,
-			WithLog:        args.EnableCallTracer,
 			WithAccessList: args.EnableAccessList,
 		}
 		if cfg.WithAccessList {
