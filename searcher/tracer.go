@@ -292,13 +292,14 @@ func (t *Tracer) OnOpcode(pc uint64, opcode byte, gas, cost uint64, scope tracin
 }
 
 func (t *Tracer) OnLog(log *types.Log) {
+	frame := t.callstack[len(t.callstack)-1]
 	l := &CallLog{
 		Address:  log.Address,
 		Topics:   log.Topics,
 		Data:     log.Data,
-		Position: len(t.callstack[len(t.callstack)-1].Calls),
+		Position: len(frame.Calls),
 	}
-	t.callstack[len(t.callstack)-1].Logs = append(t.callstack[len(t.callstack)-1].Logs, l)
+	frame.Logs = append(frame.Logs, l)
 }
 
 func (t *Tracer) CallFrame() *CallFrame {

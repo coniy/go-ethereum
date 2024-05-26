@@ -198,7 +198,11 @@ func (s *API) SearcherCall(ctx context.Context, args CallArgs) (*CallResult, err
 				cfg.AccessListExcludes[blockCtx.Coinbase] = struct{}{}
 			}
 			tracer = NewCombinedTracer(cfg)
-			vmConfig.Tracer = tracer.Hooks()
+			hooks := tracer.Hooks()
+			vmConfig.Tracer = hooks
+			if args.EnableCallTracer {
+				db.SetLogger(tracer.Hooks())
+			}
 		}
 		evm := vm.NewEVM(blockCtx, core.NewEVMTxContext(msg), db, s.chain.Config(), vmConfig)
 
@@ -346,7 +350,7 @@ func (s *API) SearcherCallBundle(ctx context.Context, args CallBundleArgs) (*Cal
 	return ret, nil
 }
 
-func (s *API) applyTransactionWithResult(gp *core.GasPool, state *state.StateDB, blockCtx vm.BlockContext, tx *types.Transaction, args CallBundleArgs) (*BundleTxResult, error) {
+func (s *API) applyTransactionWithResult(gp *core.GasPool, db *state.StateDB, blockCtx vm.BlockContext, tx *types.Transaction, args CallBundleArgs) (*BundleTxResult, error) {
 	chainConfig := s.b.ChainConfig()
 
 	msg, err := core.TransactionToMessage(tx, types.MakeSigner(chainConfig, blockCtx.BlockNumber, blockCtx.Time), blockCtx.BaseFee)
@@ -376,12 +380,15 @@ func (s *API) applyTransactionWithResult(gp *core.GasPool, state *state.StateDB,
 		}
 		tracer = NewCombinedTracer(cfg)
 		vmConfig.Tracer = tracer.Hooks()
+		if args.EnableCallTracer {
+			db.SetLogger(tracer.Hooks())
+		}
 	}
 	// Create a new context to be used in the EVM environment
-	evm := vm.NewEVM(blockCtx, core.NewEVMTxContext(msg), state, chainConfig, vmConfig)
+	evm := vm.NewEVM(blockCtx, core.NewEVMTxContext(msg), db, chainConfig, vmConfig)
 
 	// Apply the transaction to the current state (included in the env).
-	coinbaseBalanceBeforeTx := state.GetBalance(blockCtx.Coinbase)
+	coinbaseBalanceBeforeTx := db.GetBalance(blockCtx.Coinbase)
 	result, err := core.ApplyMessage(evm, msg, gp)
 	if err != nil {
 		return nil, err
@@ -392,8 +399,8 @@ func (s *API) applyTransactionWithResult(gp *core.GasPool, state *state.StateDB,
 		TxHash:       tx.Hash(),
 		GasUsed:      result.UsedGas,
 		ReturnData:   result.ReturnData,
-		Logs:         state.GetLogs(tx.Hash(), blockCtx.BlockNumber.Uint64(), common.Hash{}),
-		CoinbaseDiff: new(big.Int).Sub(state.GetBalance(blockCtx.Coinbase).ToBig(), coinbaseBalanceBeforeTx.ToBig()),
+		Logs:         db.GetLogs(tx.Hash(), blockCtx.BlockNumber.Uint64(), common.Hash{}),
+		CoinbaseDiff: new(big.Int).Sub(db.GetBalance(blockCtx.Coinbase).ToBig(), coinbaseBalanceBeforeTx.ToBig()),
 		CallMsg: &CallMsg{
 			From:       msg.From,
 			To:         msg.To,
