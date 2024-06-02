@@ -178,10 +178,11 @@ func (s *API) SearcherCall(ctx context.Context, args CallArgs) (*CallResult, err
 			NoBaseFee: !args.EnableBaseFee,
 		}
 		var tracer *Tracer
-		if args.EnableCallTracer || callMsg.EnableAccessList {
+		if args.EnableTracer || args.EnableAccessList {
 			cfg := TracerConfig{
-				WithCall:       args.EnableCallTracer,
-				WithAccessList: callMsg.EnableAccessList,
+				WithFrame:      args.EnableTracer,
+				WithStorage:    args.EnableStorage,
+				WithAccessList: args.EnableAccessList,
 			}
 			if cfg.WithAccessList {
 				cfg.AccessListExcludes = make(map[common.Address]struct{})
@@ -197,10 +198,10 @@ func (s *API) SearcherCall(ctx context.Context, args CallArgs) (*CallResult, err
 				}
 				cfg.AccessListExcludes[blockCtx.Coinbase] = struct{}{}
 			}
-			tracer = NewCombinedTracer(cfg)
+			tracer = NewTracer(cfg)
 			hooks := tracer.Hooks()
 			vmConfig.Tracer = hooks
-			if args.EnableCallTracer {
+			if args.EnableTracer {
 				db.SetLogger(tracer.Hooks())
 			}
 		}
@@ -218,10 +219,10 @@ func (s *API) SearcherCall(ctx context.Context, args CallArgs) (*CallResult, err
 			txResult.Error = fmt.Sprintf("%s (supplied gas %d)", err.Error(), msg.GasLimit)
 		} else {
 			txResult.Logs = db.GetLogs(txHash, blockCtx.BlockNumber.Uint64(), common.Hash{})
-			if args.EnableCallTracer {
-				txResult.CallFrame = tracer.CallFrame()
+			if args.EnableTracer {
+				txResult.Frame = tracer.Frame()
 			}
-			if callMsg.EnableAccessList {
+			if args.EnableAccessList {
 				txResult.AccessList = tracer.AccessList()
 			}
 			if result.Err != nil {
@@ -359,9 +360,10 @@ func (s *API) applyTransactionWithResult(gp *core.GasPool, db *state.StateDB, bl
 	}
 	var tracer *Tracer
 	vmConfig := *s.chain.GetVMConfig()
-	if args.EnableCallTracer || args.EnableAccessList {
+	if args.EnableTracer || args.EnableAccessList {
 		cfg := TracerConfig{
-			WithCall:       args.EnableCallTracer,
+			WithFrame:      args.EnableTracer,
+			WithStorage:    args.EnableStorage,
 			WithAccessList: args.EnableAccessList,
 		}
 		if cfg.WithAccessList {
@@ -378,9 +380,9 @@ func (s *API) applyTransactionWithResult(gp *core.GasPool, db *state.StateDB, bl
 			}
 			cfg.AccessListExcludes[blockCtx.Coinbase] = struct{}{}
 		}
-		tracer = NewCombinedTracer(cfg)
+		tracer = NewTracer(cfg)
 		vmConfig.Tracer = tracer.Hooks()
-		if args.EnableCallTracer {
+		if args.EnableTracer {
 			db.SetLogger(tracer.Hooks())
 		}
 	}
@@ -414,8 +416,8 @@ func (s *API) applyTransactionWithResult(gp *core.GasPool, db *state.StateDB, bl
 			AccessList: tx.AccessList(),
 		},
 	}
-	if args.EnableCallTracer {
-		txResult.CallFrame = tracer.CallFrame()
+	if args.EnableTracer {
+		txResult.Frame = tracer.Frame()
 	}
 	if args.EnableAccessList {
 		txResult.AccessList = tracer.AccessList()

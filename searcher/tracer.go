@@ -7,25 +7,8 @@ import (
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
-	"github.com/holiman/uint256"
 	"math/big"
 )
-
-func (f *CallFrame) processOutput(output []byte, err error) {
-	output = common.CopyBytes(output)
-	if err == nil {
-		f.Output = output
-		return
-	}
-	f.Error = err.Error()
-	f.Output = output
-	if !errors.Is(err, vm.ErrExecutionReverted) || len(output) < 4 {
-		return
-	}
-	if unpacked, err := abi.UnpackRevert(output); err == nil {
-		f.RevertReason = unpacked
-	}
-}
 
 // accessList is an accumulator for the set of accounts and storage slots an EVM
 // contract execution touches.
@@ -71,45 +54,28 @@ func (al accessList) accessList() types.AccessList {
 }
 
 type Tracer struct {
-	config    TracerConfig
-	env       *tracing.VMContext
-	callstack []*CallFrame
-	gasLimit  uint64
-	list      accessList // Set of accounts and storage slots touched
-	ops       []Operation
+	config       TracerConfig
+	env          *tracing.VMContext
+	rootFrame    *Frame
+	currentFrame *Frame
+	gasLimit     uint64
+	list         accessList // Set of accounts and storage slots touched
 }
 
 type TracerConfig struct {
-	WithCall           bool                        `json:"withCall,omitempty"`
+	WithFrame          bool                        `json:"withFrame,omitempty"`
+	WithStorage        bool                        `json:"withStorage,omitempty"`
 	WithAccessList     bool                        `json:"withAccessList,omitempty"`
 	AccessListExcludes map[common.Address]struct{} `json:"accessListExcludes,omitempty"`
-	WithOpcode         bool                        `json:"withOpcode,omitempty"`
-	WithMemory         bool                        `json:"withMemory,omitempty"`
-	WithStack          bool                        `json:"withStack,omitempty"`
 }
 
-type Operation struct {
-	PC            uint64                      `json:"pc"`
-	Op            string                      `json:"op"`
-	Gas           uint64                      `json:"gas"`
-	GasCost       uint64                      `json:"gasCost,omitempty"`
-	Memory        []byte                      `json:"memory,omitempty"`
-	Stack         []uint256.Int               `json:"stack,omitempty"`
-	ReturnData    []byte                      `json:"returnData,omitempty"`
-	Storage       map[common.Hash]common.Hash `json:"storage,omitempty"`
-	Depth         int                         `json:"depth,omitempty"`
-	RefundCounter uint64                      `json:"refund,omitempty"`
-	Error         string                      `json:"error,omitempty"`
-}
-
-// NewCombinedTracer returns a native go tracer which tracks
+// NewTracer returns a native go tracer which tracks
 // call frames of a tx, and implements vm.EVMLogger.
-func NewCombinedTracer(config TracerConfig) *Tracer {
-	// First callframe contains tx context info
+func NewTracer(config TracerConfig) *Tracer {
+	// First call frame contains tx context info
 	// and is populated on start and end.
 	tracer := &Tracer{
-		config:    config,
-		callstack: []*CallFrame{{}},
+		config: config,
 	}
 	if config.WithAccessList {
 		tracer.list = newAccessList()
@@ -119,17 +85,14 @@ func NewCombinedTracer(config TracerConfig) *Tracer {
 
 func (t *Tracer) Hooks() *tracing.Hooks {
 	h := new(tracing.Hooks)
-	if t.config.WithCall {
+	if t.config.WithFrame {
 		h.OnTxStart = t.OnTxStart
 		h.OnTxEnd = t.OnTxEnd
 		h.OnEnter = t.OnEnter
 		h.OnExit = t.OnExit
 		h.OnLog = t.OnLog
 	}
-	if t.config.WithAccessList {
-		h.OnOpcode = t.OnOpcode
-	}
-	if t.config.WithOpcode {
+	if t.config.WithStorage || t.config.WithAccessList {
 		h.OnOpcode = t.OnOpcode
 	}
 	return h
@@ -143,174 +106,196 @@ func (t *Tracer) OnTxEnd(receipt *types.Receipt, err error) {
 	if err != nil {
 		return
 	}
-	if t.config.WithCall {
-		t.callstack[0].GasUsed = receipt.GasUsed
+	if t.rootFrame != nil {
+		call, ok := t.rootFrame.Value.(*FrameCall)
+		if ok && call != nil {
+			call.GasUsed = receipt.GasUsed
+		}
 	}
 }
 
 // OnEnter is called when EVM enters a new scope (via call, create or selfdestruct).
 func (t *Tracer) OnEnter(depth int, typ byte, from common.Address, to common.Address, input []byte, gas uint64, value *big.Int) {
+	if value != nil && value.Sign() == 0 {
+		value = nil
+	}
 	if depth == 0 {
-		t.callstack[0] = &CallFrame{
-			Type:  CallType(vm.OpCode(typ).String()),
-			From:  from,
-			To:    to,
-			Value: value,
-			Gas:   t.gasLimit,
-			Input: common.CopyBytes(input),
+		t.rootFrame = &Frame{
+			Opcode: vm.OpCode(typ),
+			Value: &FrameCall{
+				From:  from,
+				To:    to,
+				Value: value,
+				Gas:   t.gasLimit,
+				Input: common.CopyBytes(input),
+			},
 		}
+		t.currentFrame = t.rootFrame
 	} else {
-		t.callstack = append(t.callstack, &CallFrame{
-			Type:  CallType(vm.OpCode(typ).String()),
-			From:  from,
-			To:    to,
-			Value: value,
-			Gas:   gas,
-			Input: common.CopyBytes(input),
-		})
+		sub := &Frame{
+			Opcode: vm.OpCode(typ),
+			Value: &FrameCall{
+				From:  from,
+				To:    to,
+				Value: value,
+				Gas:   gas,
+				Input: common.CopyBytes(input),
+			},
+			Parent: t.currentFrame,
+		}
+		t.currentFrame.Subs = append(t.currentFrame.Subs, sub)
+		t.currentFrame = sub
+	}
+}
+
+func (f *Frame) processOutput(gasUsed uint64, output []byte, err error) {
+	call := f.Value.(*FrameCall)
+	call.GasUsed = gasUsed
+	output = common.CopyBytes(output)
+	call.Output = output
+	if err == nil {
+		return
+	}
+	call.Error = err.Error()
+	if !errors.Is(err, vm.ErrExecutionReverted) || len(output) < 4 {
+		return
+	}
+	if unpacked, err := abi.UnpackRevert(output); err == nil {
+		call.RevertReason = unpacked
 	}
 }
 
 func (t *Tracer) OnExit(depth int, output []byte, gasUsed uint64, err error, reverted bool) {
-	if depth == 0 {
-		// capture end
-		if len(t.callstack) != 1 {
-			return
-		}
-		t.callstack[0].GasUsed = gasUsed
-		t.callstack[0].processOutput(output, err)
+	if t.currentFrame == nil {
 		return
 	}
-
-	size := len(t.callstack)
-	if size <= 1 {
-		return
-	}
-	// Pop call.
-	call := t.callstack[size-1]
-	t.callstack = t.callstack[:size-1]
-	size -= 1
-
-	call.GasUsed = gasUsed
-	call.processOutput(output, err)
-	// Nest call into parent.
-	t.callstack[size-1].Calls = append(t.callstack[size-1].Calls, call)
+	t.currentFrame.processOutput(gasUsed, output, err)
+	t.currentFrame = t.currentFrame.Parent
 }
 
 // OnOpcode logs a new structured log message and pushes it out to the environment
 // also tracks SLOAD/SSTORE ops to track storage change.
 func (t *Tracer) OnOpcode(pc uint64, opcode byte, gas, cost uint64, scope tracing.OpContext, rData []byte, depth int, err error) {
+	if err != nil {
+		return
+	}
 	op := vm.OpCode(opcode)
 	stack := scope.StackData()
 	stackLen := len(scope.StackData())
-
-	if t.config.WithOpcode {
-		// Copy a snapshot of the current memory state to a new buffer
-		var mem []byte
-		memory := scope.MemoryData()
-		if t.config.WithMemory {
-			mem = make([]byte, len(memory))
-			copy(mem, memory)
+	switch op {
+	case vm.SLOAD:
+		if stackLen < 1 {
+			return
 		}
-		// Copy a snapshot of the current stack state to a new buffer
-		var stck []uint256.Int
-		if t.config.WithStack {
-			stck = make([]uint256.Int, stackLen)
-			copy(stck, stack)
+		if t.config.WithStorage {
+			slot := common.Hash(stack[stackLen-1].Bytes32())
+			value := t.env.StateDB.GetState(scope.Address(), slot)
+			t.currentFrame.Subs = append(t.currentFrame.Subs, &Frame{
+				Opcode: op,
+				Value: &FrameStorage{
+					Key:   slot,
+					Value: value,
+				},
+			})
 		}
-
-		// Copy a snapshot of the current storage to a new container
-		var storage map[common.Hash]common.Hash
-		if op == vm.SLOAD || op == vm.SSTORE {
-			// capture SLOAD opcodes and record the read entry in the local storage
-			if op == vm.SLOAD && stackLen >= 1 {
+		if t.config.WithAccessList {
+			addr := scope.Address()
+			if _, ok := t.config.AccessListExcludes[addr]; !ok {
 				slot := common.Hash(stack[stackLen-1].Bytes32())
-				value := t.env.StateDB.GetState(scope.Address(), slot)
-				storage = map[common.Hash]common.Hash{
-					slot: value,
-				}
-			} else if op == vm.SSTORE && stackLen >= 2 {
-				// capture SSTORE opcodes and record the written entry in the local storage.
+				t.list.addSlot(addr, slot)
+			}
+		}
+	case vm.SSTORE:
+		if stackLen < 2 {
+			return
+		}
+		if t.config.WithStorage {
+			slot := common.Hash(stack[stackLen-1].Bytes32())
+			value := common.Hash(stack[stackLen-2].Bytes32())
+			t.currentFrame.Subs = append(t.currentFrame.Subs, &Frame{
+				Opcode: op,
+				Value: &FrameStorage{
+					Key:   slot,
+					Value: value,
+				},
+			})
+		}
+		if t.config.WithAccessList {
+			addr := scope.Address()
+			if _, ok := t.config.AccessListExcludes[addr]; !ok {
 				slot := common.Hash(stack[stackLen-1].Bytes32())
-				value := common.Hash(stack[stackLen-2].Bytes32())
-				storage = map[common.Hash]common.Hash{
-					slot: value,
-				}
+				t.list.addSlot(addr, slot)
 			}
 		}
-
-		var rdata []byte
-		rdata = make([]byte, len(rData))
-		copy(rdata, rData)
-
-		var errString string
-		if err != nil {
-			errString = err.Error()
+	case vm.TLOAD:
+		if stackLen < 1 {
+			return
 		}
-
-		// create a new snapshot of the EVM.
-		t.ops = append(t.ops, Operation{
-			PC:            pc,
-			Op:            op.String(),
-			Gas:           gas,
-			GasCost:       cost,
-			Memory:        mem,
-			Stack:         stck,
-			ReturnData:    rdata,
-			Storage:       storage,
-			Depth:         depth,
-			RefundCounter: t.env.StateDB.GetRefund(),
-			Error:         errString,
-		})
-	}
-
-	if t.config.WithAccessList {
-		if op == vm.SLOAD || op == vm.SSTORE {
-			if stackLen >= 1 {
-				addr := scope.Address()
-				if _, ok := t.config.AccessListExcludes[addr]; !ok {
-					slot := common.Hash(stack[stackLen-1].Bytes32())
-					t.list.addSlot(addr, slot)
-				}
+		if t.config.WithStorage {
+			slot := common.Hash(stack[stackLen-1].Bytes32())
+			value := t.env.StateDB.(vm.StateDB).GetTransientState(scope.Address(), slot)
+			t.currentFrame.Subs = append(t.currentFrame.Subs, &Frame{
+				Opcode: op,
+				Value: &FrameStorage{
+					Key:   slot,
+					Value: value,
+				},
+			})
+		}
+	case vm.TSTORE:
+		if stackLen < 2 {
+			return
+		}
+		if t.config.WithStorage {
+			slot := common.Hash(stack[stackLen-1].Bytes32())
+			value := common.Hash(stack[stackLen-2].Bytes32())
+			t.currentFrame.Subs = append(t.currentFrame.Subs, &Frame{
+				Opcode: op,
+				Value: &FrameStorage{
+					Key:   slot,
+					Value: value,
+				},
+			})
+		}
+	case vm.BALANCE, vm.EXTCODESIZE, vm.EXTCODECOPY, vm.EXTCODEHASH, vm.SELFDESTRUCT:
+		if stackLen < 1 {
+			return
+		}
+		if t.config.WithAccessList {
+			addr := common.Address(stack[stackLen-1].Bytes20())
+			if _, ok := t.config.AccessListExcludes[addr]; !ok {
+				t.list.addAddress(addr)
 			}
-		} else if op == vm.BALANCE || op == vm.EXTCODESIZE || op == vm.EXTCODECOPY || op == vm.EXTCODEHASH || op == vm.SELFDESTRUCT {
-			if stackLen >= 1 {
-				addr := common.Address(stack[stackLen-1].Bytes20())
-				if _, ok := t.config.AccessListExcludes[addr]; !ok {
-					t.list.addAddress(addr)
-				}
-			}
-		} else if op == vm.CALL || op == vm.STATICCALL || op == vm.DELEGATECALL || op == vm.CALLCODE {
-			if stackLen >= 5 {
-				addr := common.Address(stack[stackLen-2].Bytes20())
-				if _, ok := t.config.AccessListExcludes[addr]; !ok {
-					t.list.addAddress(addr)
-				}
+		}
+	case vm.CALL, vm.STATICCALL, vm.DELEGATECALL, vm.CALLCODE:
+		if stackLen < 5 {
+			return
+		}
+		if t.config.WithAccessList {
+			addr := common.Address(stack[stackLen-2].Bytes20())
+			if _, ok := t.config.AccessListExcludes[addr]; !ok {
+				t.list.addAddress(addr)
 			}
 		}
 	}
 }
 
 func (t *Tracer) OnLog(log *types.Log) {
-	frame := t.callstack[len(t.callstack)-1]
-	l := &CallLog{
-		Address:  log.Address,
-		Topics:   log.Topics,
-		Data:     log.Data,
-		Position: len(frame.Calls),
-	}
-	frame.Logs = append(frame.Logs, l)
+	t.currentFrame.Subs = append(t.currentFrame.Subs, &Frame{
+		Opcode: vm.LOG0 + vm.OpCode(len(log.Topics)),
+		Value: &FrameLog{
+			Address: log.Address,
+			Topics:  log.Topics,
+			Data:    log.Data,
+		},
+	})
 }
 
-func (t *Tracer) CallFrame() *CallFrame {
-	return t.callstack[0]
+func (t *Tracer) Frame() *Frame {
+	return t.rootFrame
 }
 
 // AccessList returns the current accesslist maintained by the tracer.
 func (t *Tracer) AccessList() types.AccessList {
 	return t.list.accessList()
-}
-
-func (t *Tracer) Operations() []Operation {
-	return t.ops
 }
