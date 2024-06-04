@@ -99,6 +99,7 @@ func (t *Tracer) Hooks() *tracing.Hooks {
 }
 
 func (t *Tracer) OnTxStart(env *tracing.VMContext, tx *types.Transaction, from common.Address) {
+	t.env = env
 	t.gasLimit = tx.Gas()
 }
 
