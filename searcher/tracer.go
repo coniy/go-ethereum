@@ -85,8 +85,8 @@ func NewTracer(config TracerConfig) *Tracer {
 
 func (t *Tracer) Hooks() *tracing.Hooks {
 	h := new(tracing.Hooks)
+	h.OnTxStart = t.OnTxStart
 	if t.config.WithFrame {
-		h.OnTxStart = t.OnTxStart
 		h.OnTxEnd = t.OnTxEnd
 		h.OnEnter = t.OnEnter
 		h.OnExit = t.OnExit
@@ -108,7 +108,7 @@ func (t *Tracer) OnTxEnd(receipt *types.Receipt, err error) {
 		return
 	}
 	if t.rootFrame != nil {
-		call, ok := t.rootFrame.Value.(*FrameCall)
+		call, ok := t.rootFrame.Data.(*FrameCall)
 		if ok && call != nil {
 			call.GasUsed = receipt.GasUsed
 		}
@@ -123,7 +123,7 @@ func (t *Tracer) OnEnter(depth int, typ byte, from common.Address, to common.Add
 	if depth == 0 {
 		t.rootFrame = &Frame{
 			Opcode: vm.OpCode(typ),
-			Value: &FrameCall{
+			Data: &FrameCall{
 				From:  from,
 				To:    to,
 				Value: value,
@@ -135,7 +135,7 @@ func (t *Tracer) OnEnter(depth int, typ byte, from common.Address, to common.Add
 	} else {
 		sub := &Frame{
 			Opcode: vm.OpCode(typ),
-			Value: &FrameCall{
+			Data: &FrameCall{
 				From:  from,
 				To:    to,
 				Value: value,
@@ -150,7 +150,7 @@ func (t *Tracer) OnEnter(depth int, typ byte, from common.Address, to common.Add
 }
 
 func (f *Frame) processOutput(gasUsed uint64, output []byte, err error) {
-	call := f.Value.(*FrameCall)
+	call := f.Data.(*FrameCall)
 	call.GasUsed = gasUsed
 	output = common.CopyBytes(output)
 	call.Output = output
@@ -193,7 +193,7 @@ func (t *Tracer) OnOpcode(pc uint64, opcode byte, gas, cost uint64, scope tracin
 			value := t.env.StateDB.GetState(scope.Address(), slot)
 			t.currentFrame.Subs = append(t.currentFrame.Subs, &Frame{
 				Opcode: op,
-				Value: &FrameStorage{
+				Data: &FrameStorage{
 					Key:   slot,
 					Value: value,
 				},
@@ -215,7 +215,7 @@ func (t *Tracer) OnOpcode(pc uint64, opcode byte, gas, cost uint64, scope tracin
 			value := common.Hash(stack[stackLen-2].Bytes32())
 			t.currentFrame.Subs = append(t.currentFrame.Subs, &Frame{
 				Opcode: op,
-				Value: &FrameStorage{
+				Data: &FrameStorage{
 					Key:   slot,
 					Value: value,
 				},
@@ -237,7 +237,7 @@ func (t *Tracer) OnOpcode(pc uint64, opcode byte, gas, cost uint64, scope tracin
 			value := t.env.StateDB.(vm.StateDB).GetTransientState(scope.Address(), slot)
 			t.currentFrame.Subs = append(t.currentFrame.Subs, &Frame{
 				Opcode: op,
-				Value: &FrameStorage{
+				Data: &FrameStorage{
 					Key:   slot,
 					Value: value,
 				},
@@ -252,7 +252,7 @@ func (t *Tracer) OnOpcode(pc uint64, opcode byte, gas, cost uint64, scope tracin
 			value := common.Hash(stack[stackLen-2].Bytes32())
 			t.currentFrame.Subs = append(t.currentFrame.Subs, &Frame{
 				Opcode: op,
-				Value: &FrameStorage{
+				Data: &FrameStorage{
 					Key:   slot,
 					Value: value,
 				},
@@ -284,7 +284,7 @@ func (t *Tracer) OnOpcode(pc uint64, opcode byte, gas, cost uint64, scope tracin
 func (t *Tracer) OnLog(log *types.Log) {
 	t.currentFrame.Subs = append(t.currentFrame.Subs, &Frame{
 		Opcode: vm.LOG0 + vm.OpCode(len(log.Topics)),
-		Value: &FrameLog{
+		Data: &FrameLog{
 			Address: log.Address,
 			Topics:  log.Topics,
 			Data:    log.Data,

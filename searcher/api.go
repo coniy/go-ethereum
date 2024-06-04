@@ -208,6 +208,9 @@ func (s *API) SearcherCall(ctx context.Context, args CallArgs) (*CallResult, err
 
 		// Apply state transition
 		txResult := new(TxResult)
+		if tracer != nil {
+			tracer.OnTxStart(evm.GetVMContext(), txArgs.ToTransaction(), msg.From)
+		}
 		result, err := core.ApplyMessage(evm, msg, gp)
 
 		// Modifications are committed to the state
@@ -217,6 +220,9 @@ func (s *API) SearcherCall(ctx context.Context, args CallArgs) (*CallResult, err
 		if err != nil {
 			txResult.Error = fmt.Sprintf("%s (supplied gas %d)", err.Error(), msg.GasLimit)
 		} else {
+			if tracer != nil {
+				tracer.OnTxEnd(&types.Receipt{GasUsed: result.UsedGas}, nil)
+			}
 			txResult.Logs = db.GetLogs(txHash, blockCtx.BlockNumber.Uint64(), common.Hash{})
 			if args.EnableTracer {
 				txResult.Frame = tracer.Frame()
@@ -390,9 +396,15 @@ func (s *API) applyTransactionWithResult(gp *core.GasPool, db *state.StateDB, bl
 
 	// Apply the transaction to the current state (included in the env).
 	coinbaseBalanceBeforeTx := db.GetBalance(blockCtx.Coinbase)
+	if tracer != nil {
+		tracer.OnTxStart(evm.GetVMContext(), tx, msg.From)
+	}
 	result, err := core.ApplyMessage(evm, msg, gp)
 	if err != nil {
 		return nil, err
+	}
+	if tracer != nil {
+		tracer.OnTxEnd(&types.Receipt{GasUsed: result.UsedGas}, nil)
 	}
 
 	// Set the receipt logs and create the bloom filter.
