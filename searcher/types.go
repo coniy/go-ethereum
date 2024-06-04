@@ -1,6 +1,7 @@
 package searcher
 
 import (
+	"encoding/json"
 	"fmt"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -197,6 +198,43 @@ type Frame struct {
 	Subs   []*Frame  `json:"subs,omitempty"`
 
 	Parent *Frame `json:"-"`
+}
+
+func (f *Frame) UnmarshalJSON(data []byte) error {
+	type Alias struct {
+		Opcode vm.OpCode       `json:"opcode,omitempty"`
+		Value  json.RawMessage `json:"value,omitempty"`
+		Subs   []*Frame        `json:"subs,omitempty"`
+	}
+	var alias Alias
+	if err := json.Unmarshal(data, &alias); err != nil {
+		return err
+	}
+	f.Opcode = alias.Opcode
+	f.Subs = alias.Subs
+	switch f.Opcode {
+	case vm.CALL, vm.STATICCALL, vm.DELEGATECALL, vm.CREATE, vm.CREATE2, vm.SELFDESTRUCT:
+		call := new(FrameCall)
+		if err := json.Unmarshal(alias.Value, call); err != nil {
+			return err
+		}
+		f.Value = call
+	case vm.LOG0, vm.LOG1, vm.LOG2, vm.LOG3, vm.LOG4:
+		log := new(FrameLog)
+		if err := json.Unmarshal(alias.Value, log); err != nil {
+			return err
+		}
+		f.Value = log
+	case vm.SLOAD, vm.SSTORE, vm.TLOAD, vm.TSTORE:
+		storage := new(FrameStorage)
+		if err := json.Unmarshal(alias.Value, storage); err != nil {
+			return err
+		}
+		f.Value = storage
+	default:
+		return fmt.Errorf("unsupported opcode %v", f.Opcode.String())
+	}
+	return nil
 }
 
 type FrameCall struct {
