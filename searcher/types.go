@@ -21,10 +21,10 @@ type OverrideAccount struct {
 	StateDiff *map[common.Hash]common.Hash `json:"stateDiff,omitempty"`
 }
 
-type StateOverride map[common.Address]*OverrideAccount
+type StateOverrides map[common.Address]*OverrideAccount
 
 // Apply overrides the fields of specified accounts into the given state.
-func (diff *StateOverride) Apply(state *state.StateDB) error {
+func (diff *StateOverrides) Apply(state *state.StateDB) error {
 	if diff == nil {
 		return nil
 	}
@@ -136,7 +136,7 @@ type CallArgs struct {
 	EnableAccessList       bool                  `json:"enableAccessList,omitempty"`
 	EnableStorage          bool                  `json:"enableStorage,omitempty"`
 	BlockOverrides         *BlockOverrides       `json:"blockOverrides,omitempty"`
-	StateOverrides         *StateOverride        `json:"stateOverrides,omitempty"`
+	StateOverrides         *StateOverrides       `json:"stateOverrides,omitempty"`
 }
 
 type CallResult struct {
@@ -162,7 +162,7 @@ type CallBundleArgs struct {
 	EnableAccessList       bool                  `json:"enableAccessList,omitempty"`
 	EnableStorage          bool                  `json:"enableStorage,omitempty"`
 	BlockOverrides         *BlockOverrides       `json:"blockOverrides,omitempty"`
-	StateOverrides         *StateOverride        `json:"stateOverrides,omitempty"`
+	StateOverrides         *StateOverrides       `json:"stateOverrides,omitempty"`
 }
 
 type CallBundleResult struct {

@@ -199,10 +199,9 @@ func (s *API) SearcherCall(ctx context.Context, args CallArgs) (*CallResult, err
 				cfg.AccessListExcludes[blockCtx.Coinbase] = struct{}{}
 			}
 			tracer = NewTracer(cfg)
-			hooks := tracer.Hooks()
-			vmConfig.Tracer = hooks
+			vmConfig.Tracer = tracer.Hooks()
 			if args.EnableTracer {
-				db.SetLogger(tracer.Hooks())
+				db.SetLogger(vmConfig.Tracer)
 			}
 		}
 		evm := vm.NewEVM(blockCtx, core.NewEVMTxContext(msg), db, s.chain.Config(), vmConfig)
@@ -383,7 +382,7 @@ func (s *API) applyTransactionWithResult(gp *core.GasPool, db *state.StateDB, bl
 		tracer = NewTracer(cfg)
 		vmConfig.Tracer = tracer.Hooks()
 		if args.EnableTracer {
-			db.SetLogger(tracer.Hooks())
+			db.SetLogger(vmConfig.Tracer)
 		}
 	}
 	// Create a new context to be used in the EVM environment

@@ -181,7 +181,7 @@ func (t *Tracer) OnOpcode(pc uint64, opcode byte, gas, cost uint64, scope tracin
 	}
 	op := vm.OpCode(opcode)
 	stack := scope.StackData()
-	stackLen := len(scope.StackData())
+	stackLen := len(stack)
 	switch op {
 	case vm.SLOAD:
 		if stackLen < 1 {
