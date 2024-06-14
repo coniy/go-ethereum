@@ -15,21 +15,21 @@ import (
 )
 
 type OverrideAccount struct {
-	Nonce     *uint64                      `json:"nonce,omitempty"`
-	Code      *hexutil.Bytes               `json:"code,omitempty"`
-	Balance   *big.Int                     `json:"balance,omitempty"`
-	State     *map[common.Hash]common.Hash `json:"state,omitempty"`
-	StateDiff *map[common.Hash]common.Hash `json:"stateDiff,omitempty"`
+	Nonce     *uint64                     `json:"nonce,omitempty"`
+	Code      *hexutil.Bytes              `json:"code,omitempty"`
+	Balance   *big.Int                    `json:"balance,omitempty"`
+	State     map[common.Hash]common.Hash `json:"state,omitempty"`
+	StateDiff map[common.Hash]common.Hash `json:"stateDiff,omitempty"`
 }
 
 type StateOverrides map[common.Address]*OverrideAccount
 
 // Apply overrides the fields of specified accounts into the given state.
-func (diff *StateOverrides) Apply(state *state.StateDB) error {
+func (diff StateOverrides) Apply(state *state.StateDB) error {
 	if diff == nil {
 		return nil
 	}
-	for addr, account := range *diff {
+	for addr, account := range diff {
 		// Override account nonce.
 		if account.Nonce != nil {
 			state.SetNonce(addr, *account.Nonce)
@@ -47,11 +47,11 @@ func (diff *StateOverrides) Apply(state *state.StateDB) error {
 		}
 		// Replace entire state if caller requires.
 		if account.State != nil {
-			state.SetStorage(addr, *account.State)
+			state.SetStorage(addr, account.State)
 		}
 		// Apply state diff into specified accounts.
 		if account.StateDiff != nil {
-			for key, value := range *account.StateDiff {
+			for key, value := range account.StateDiff {
 				state.SetState(addr, key, value)
 			}
 		}
@@ -137,7 +137,7 @@ type CallArgs struct {
 	EnableAccessList       bool                  `json:"enableAccessList,omitempty"`
 	EnableStorage          bool                  `json:"enableStorage,omitempty"`
 	BlockOverrides         *BlockOverrides       `json:"blockOverrides,omitempty"`
-	StateOverrides         *StateOverrides       `json:"stateOverrides,omitempty"`
+	StateOverrides         StateOverrides        `json:"stateOverrides,omitempty"`
 }
 
 type CallResult struct {
@@ -163,7 +163,7 @@ type CallBundleArgs struct {
 	EnableAccessList       bool                  `json:"enableAccessList,omitempty"`
 	EnableStorage          bool                  `json:"enableStorage,omitempty"`
 	BlockOverrides         *BlockOverrides       `json:"blockOverrides,omitempty"`
-	StateOverrides         *StateOverrides       `json:"stateOverrides,omitempty"`
+	StateOverrides         StateOverrides        `json:"stateOverrides,omitempty"`
 }
 
 type CallBundleResult struct {
