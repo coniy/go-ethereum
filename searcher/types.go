@@ -150,9 +150,9 @@ type TxResult struct {
 	GasUsed    uint64           `json:"gasUsed,omitempty"`
 	Error      string           `json:"error,omitempty"`
 	ReturnData hexutil.Bytes    `json:"returnData,omitempty"`
+	Frame      *Frame           `json:"frame,omitempty"`
 	Logs       []*types.Log     `json:"logs,omitempty"`
 	AccessList types.AccessList `json:"accessList,omitempty"`
-	Frame      *Frame           `json:"frame,omitempty"`
 }
 
 type CallBundleArgs struct {
@@ -182,14 +182,14 @@ type BundleTxResult struct {
 	GasUsed           uint64           `json:"gasUsed,omitempty"`
 	Error             string           `json:"error,omitempty"`
 	ReturnData        hexutil.Bytes    `json:"returnData,omitempty"`
-	Logs              []*types.Log     `json:"logs,omitempty"`
 	CoinbaseDiff      *big.Int         `json:"coinbaseDiff,omitempty"`
 	GasFees           *big.Int         `json:"gasFees,omitempty"`
 	EthSentToCoinbase *big.Int         `json:"ethSentToCoinbase,omitempty"`
 	GasPrice          *big.Int         `json:"gasPrice,omitempty"`
 	CallMsg           *CallMsg         `json:"callMsg,omitempty"`
-	AccessList        types.AccessList `json:"accessList,omitempty"`
 	Frame             *Frame           `json:"frame,omitempty"`
+	Logs              []*types.Log     `json:"logs,omitempty"`
+	AccessList        types.AccessList `json:"accessList,omitempty"`
 }
 
 type Frame struct {
