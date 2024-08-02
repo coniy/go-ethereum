@@ -4,9 +4,11 @@ import (
 	"errors"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
+	"github.com/ethereum/go-ethereum/crypto"
 	"math/big"
 )
 
@@ -149,8 +151,14 @@ func (t *Tracer) OnEnter(depth int, typ byte, from common.Address, to common.Add
 	}
 }
 
-func (f *Frame) processOutput(gasUsed uint64, output []byte, err error) {
-	call := f.Data.(*FrameCall)
+func (t *Tracer) OnExit(depth int, output []byte, gasUsed uint64, err error, reverted bool) {
+	if t.currentFrame == nil {
+		return
+	}
+
+	call := t.currentFrame.Data.(*FrameCall)
+	t.currentFrame = t.currentFrame.Parent
+
 	call.GasUsed = gasUsed
 	output = common.CopyBytes(output)
 	call.Output = output
@@ -164,14 +172,6 @@ func (f *Frame) processOutput(gasUsed uint64, output []byte, err error) {
 	if unpacked, err := abi.UnpackRevert(output); err == nil {
 		call.RevertReason = unpacked
 	}
-}
-
-func (t *Tracer) OnExit(depth int, output []byte, gasUsed uint64, err error, reverted bool) {
-	if t.currentFrame == nil {
-		return
-	}
-	t.currentFrame.processOutput(gasUsed, output, err)
-	t.currentFrame = t.currentFrame.Parent
 }
 
 // OnOpcode logs a new structured log message and pushes it out to the environment
@@ -193,10 +193,7 @@ func (t *Tracer) OnOpcode(pc uint64, opcode byte, gas, cost uint64, scope tracin
 			value := t.env.StateDB.GetState(scope.Address(), slot)
 			t.currentFrame.Subs = append(t.currentFrame.Subs, &Frame{
 				Opcode: op,
-				Data: &FrameStorage{
-					Key:   slot,
-					Value: value,
-				},
+				Data:   &FramePair{(*hexutil.Big)(slot.Big()), (*hexutil.Big)(value.Big())},
 			})
 		}
 		if t.config.WithAccessList {
@@ -215,10 +212,7 @@ func (t *Tracer) OnOpcode(pc uint64, opcode byte, gas, cost uint64, scope tracin
 			value := common.Hash(stack[stackLen-2].Bytes32())
 			t.currentFrame.Subs = append(t.currentFrame.Subs, &Frame{
 				Opcode: op,
-				Data: &FrameStorage{
-					Key:   slot,
-					Value: value,
-				},
+				Data:   &FramePair{(*hexutil.Big)(slot.Big()), (*hexutil.Big)(value.Big())},
 			})
 		}
 		if t.config.WithAccessList {
@@ -237,10 +231,7 @@ func (t *Tracer) OnOpcode(pc uint64, opcode byte, gas, cost uint64, scope tracin
 			value := t.env.StateDB.(vm.StateDB).GetTransientState(scope.Address(), slot)
 			t.currentFrame.Subs = append(t.currentFrame.Subs, &Frame{
 				Opcode: op,
-				Data: &FrameStorage{
-					Key:   slot,
-					Value: value,
-				},
+				Data:   &FramePair{(*hexutil.Big)(slot.Big()), (*hexutil.Big)(value.Big())},
 			})
 		}
 	case vm.TSTORE:
@@ -252,15 +243,35 @@ func (t *Tracer) OnOpcode(pc uint64, opcode byte, gas, cost uint64, scope tracin
 			value := common.Hash(stack[stackLen-2].Bytes32())
 			t.currentFrame.Subs = append(t.currentFrame.Subs, &Frame{
 				Opcode: op,
-				Data: &FrameStorage{
-					Key:   slot,
-					Value: value,
-				},
+				Data:   &FramePair{(*hexutil.Big)(slot.Big()), (*hexutil.Big)(value.Big())},
 			})
 		}
 	case vm.BALANCE, vm.EXTCODESIZE, vm.EXTCODECOPY, vm.EXTCODEHASH, vm.SELFDESTRUCT:
 		if stackLen < 1 {
 			return
+		}
+		if t.config.WithStorage {
+			key := stack[stackLen-1]
+			addr := common.Address(key.Bytes20())
+			switch op {
+			case vm.BALANCE:
+				t.currentFrame.Subs = append(t.currentFrame.Subs, &Frame{
+					Opcode: op,
+					Data:   &FramePair{(*hexutil.Big)(key.ToBig()), (*hexutil.Big)(t.env.StateDB.GetBalance(addr).ToBig())},
+				})
+			case vm.EXTCODESIZE:
+				size := len(t.env.StateDB.GetCode(addr))
+				t.currentFrame.Subs = append(t.currentFrame.Subs, &Frame{
+					Opcode: op,
+					Data:   &FramePair{(*hexutil.Big)(key.ToBig()), (*hexutil.Big)(big.NewInt(int64(size)))},
+				})
+			case vm.EXTCODEHASH:
+				hash := crypto.Keccak256Hash(t.env.StateDB.GetCode(addr))
+				t.currentFrame.Subs = append(t.currentFrame.Subs, &Frame{
+					Opcode: op,
+					Data:   &FramePair{(*hexutil.Big)(key.ToBig()), (*hexutil.Big)(hash.Big())},
+				})
+			}
 		}
 		if t.config.WithAccessList {
 			addr := common.Address(stack[stackLen-1].Bytes20())
