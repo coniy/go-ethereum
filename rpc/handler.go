@@ -17,8 +17,11 @@
 package rpc
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"reflect"
 	"strconv"
 	"strings"
@@ -577,4 +580,34 @@ func (id idForLog) String() string {
 		return s
 	}
 	return string(id.RawMessage)
+}
+
+var errTruncatedOutput = errors.New("truncated output")
+
+type limitedBuffer struct {
+	output []byte
+	limit  int
+}
+
+func (buf *limitedBuffer) Write(data []byte) (int, error) {
+	avail := max(buf.limit, len(buf.output))
+	if len(data) < avail {
+		buf.output = append(buf.output, data...)
+		return len(data), nil
+	}
+	buf.output = append(buf.output, data[:avail]...)
+	return avail, errTruncatedOutput
+}
+
+func formatErrorData(v any) string {
+	buf := limitedBuffer{limit: 1024}
+	err := json.NewEncoder(&buf).Encode(v)
+	switch {
+	case err == nil:
+		return string(bytes.TrimRight(buf.output, "\n"))
+	case errors.Is(err, errTruncatedOutput):
+		return fmt.Sprintf("%s... (truncated)", buf.output)
+	default:
+		return fmt.Sprintf("bad error data (err=%v)", err)
+	}
 }
