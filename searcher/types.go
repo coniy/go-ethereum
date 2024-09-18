@@ -225,14 +225,14 @@ func (f *Frame) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		f.Data = log
-	case vm.SLOAD, vm.SSTORE, vm.TLOAD, vm.TSTORE:
-		storage := new(FramePair)
-		if err := json.Unmarshal(alias.Data, storage); err != nil {
+	case vm.SLOAD, vm.SSTORE, vm.TLOAD, vm.TSTORE, vm.BALANCE, vm.EXTCODESIZE, vm.EXTCODECOPY, vm.EXTCODEHASH:
+		pair := new(FramePair)
+		if err := json.Unmarshal(alias.Data, pair); err != nil {
 			return err
 		}
-		f.Data = storage
+		f.Data = pair
 	default:
-		return fmt.Errorf("unsupported opcode %v", f.Opcode.String())
+		return fmt.Errorf("unsupported frame opcode %v", f.Opcode.String())
 	}
 	return nil
 }
