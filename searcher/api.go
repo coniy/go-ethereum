@@ -145,7 +145,6 @@ func (s *API) SearcherCall(ctx context.Context, args CallArgs) (*CallResult, err
 
 		// New random hash since its a call
 		db.SetTxContext(txHash, i)
-
 		// Convert tx args to msg to apply state transition
 		var gasPtr *hexutil.Uint64
 		if callMsg.Gas > 0 {
@@ -164,10 +163,13 @@ func (s *API) SearcherCall(ctx context.Context, args CallArgs) (*CallResult, err
 			AccessList:           &callMsg.AccessList,
 		}
 
-		if err := txArgs.CallDefaults(ethconfig.Defaults.RPCGasCap, blockCtx.BaseFee, s.chain.Config().ChainID); err != nil {
+		txBlockCtx := blockCtx
+		callMsg.BlockOverrides.Apply(&txBlockCtx)
+
+		if err := txArgs.CallDefaults(ethconfig.Defaults.RPCGasCap, txBlockCtx.BaseFee, s.chain.Config().ChainID); err != nil {
 			return nil, err
 		}
-		msg := txArgs.ToMessage(blockCtx.BaseFee)
+		msg := txArgs.ToMessage(txBlockCtx.BaseFee)
 		if callMsg.Nonce != nil {
 			msg.Nonce = *callMsg.Nonce
 			msg.SkipAccountChecks = false
@@ -192,11 +194,11 @@ func (s *API) SearcherCall(ctx context.Context, args CallArgs) (*CallResult, err
 				} else {
 					cfg.AccessListExcludes[crypto.CreateAddress(msg.From, db.GetNonce(msg.From))] = struct{}{}
 				}
-				isPostMerge := blockCtx.Difficulty.Cmp(common.Big0) == 0
-				for _, precompile := range vm.ActivePrecompiles(s.b.ChainConfig().Rules(blockCtx.BlockNumber, isPostMerge, blockCtx.Time)) {
+				isPostMerge := txBlockCtx.Difficulty.Cmp(common.Big0) == 0
+				for _, precompile := range vm.ActivePrecompiles(s.b.ChainConfig().Rules(txBlockCtx.BlockNumber, isPostMerge, txBlockCtx.Time)) {
 					cfg.AccessListExcludes[precompile] = struct{}{}
 				}
-				cfg.AccessListExcludes[blockCtx.Coinbase] = struct{}{}
+				cfg.AccessListExcludes[txBlockCtx.Coinbase] = struct{}{}
 			}
 			tracer = NewTracer(cfg)
 			vmConfig.Tracer = tracer.Hooks()
@@ -204,7 +206,7 @@ func (s *API) SearcherCall(ctx context.Context, args CallArgs) (*CallResult, err
 				db.SetLogger(vmConfig.Tracer)
 			}
 		}
-		evm := vm.NewEVM(blockCtx, core.NewEVMTxContext(msg), db, s.chain.Config(), vmConfig)
+		evm := vm.NewEVM(txBlockCtx, core.NewEVMTxContext(msg), db, s.chain.Config(), vmConfig)
 
 		// Apply state transition
 		txResult := new(TxResult)
@@ -215,7 +217,7 @@ func (s *API) SearcherCall(ctx context.Context, args CallArgs) (*CallResult, err
 
 		// Modifications are committed to the state
 		// Only delete empty objects if EIP158/161 (a.k.a Spurious Dragon) is in effect
-		db.Finalise(evm.ChainConfig().IsEIP158(blockCtx.BlockNumber))
+		db.Finalise(evm.ChainConfig().IsEIP158(txBlockCtx.BlockNumber))
 
 		if err != nil {
 			txResult.Error = fmt.Sprintf("%s (supplied gas %d)", err.Error(), msg.GasLimit)
@@ -223,7 +225,7 @@ func (s *API) SearcherCall(ctx context.Context, args CallArgs) (*CallResult, err
 			if tracer != nil {
 				tracer.OnTxEnd(&types.Receipt{GasUsed: result.UsedGas}, nil)
 			}
-			txResult.Logs = db.GetLogs(txHash, blockCtx.BlockNumber.Uint64(), common.Hash{})
+			txResult.Logs = db.GetLogs(txHash, txBlockCtx.BlockNumber.Uint64(), common.Hash{})
 			if args.EnableTracer {
 				txResult.Frame = tracer.Frame()
 			}

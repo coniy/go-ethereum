@@ -125,7 +125,8 @@ type CallMsg struct {
 	Data      hexutil.Bytes   `json:"data,omitempty"`
 
 	// Introduced by AccessListTxType transaction.
-	AccessList types.AccessList `json:"accessList,omitempty"`
+	AccessList     types.AccessList `json:"accessList,omitempty"`
+	BlockOverrides *BlockOverrides  `json:"blockOverrides,omitempty"`
 }
 
 type CallArgs struct {
