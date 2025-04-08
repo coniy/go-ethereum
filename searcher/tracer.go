@@ -60,7 +60,6 @@ type Tracer struct {
 	env          *tracing.VMContext
 	rootFrame    *Frame
 	currentFrame *Frame
-	gasLimit     uint64
 	list         accessList // Set of accounts and storage slots touched
 }
 
@@ -102,7 +101,6 @@ func (t *Tracer) Hooks() *tracing.Hooks {
 
 func (t *Tracer) OnTxStart(env *tracing.VMContext, tx *types.Transaction, from common.Address) {
 	t.env = env
-	t.gasLimit = tx.Gas()
 }
 
 func (t *Tracer) OnTxEnd(receipt *types.Receipt, err error) {
@@ -129,7 +127,7 @@ func (t *Tracer) OnEnter(depth int, typ byte, from common.Address, to common.Add
 				From:  from,
 				To:    to,
 				Value: value,
-				Gas:   t.gasLimit,
+				Gas:   gas,
 				Input: common.CopyBytes(input),
 			},
 		}

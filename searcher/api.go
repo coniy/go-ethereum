@@ -7,18 +7,16 @@ import (
 	"fmt"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/hexutil"
-	"github.com/ethereum/go-ethereum/common/math"
 	"github.com/ethereum/go-ethereum/consensus/misc/eip1559"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/ethereum/go-ethereum/eth/ethconfig"
 	"github.com/ethereum/go-ethereum/internal/ethapi"
 	"github.com/ethereum/go-ethereum/rpc"
 	"golang.org/x/crypto/sha3"
+	"math"
 	"math/big"
 	"time"
 )
@@ -146,34 +144,11 @@ func (s *API) SearcherCall(ctx context.Context, args CallArgs) (*CallResult, err
 		// New random hash since its a call
 		db.SetTxContext(txHash, i)
 		// Convert tx args to msg to apply state transition
-		var gasPtr *hexutil.Uint64
-		if callMsg.Gas > 0 {
-			gasPtr = (*hexutil.Uint64)(&callMsg.Gas)
-		}
-		txArgs := ethapi.TransactionArgs{
-			From:                 &callMsg.From,
-			To:                   callMsg.To,
-			Gas:                  gasPtr,
-			GasPrice:             (*hexutil.Big)(callMsg.GasPrice),
-			MaxFeePerGas:         (*hexutil.Big)(callMsg.GasFeeCap),
-			MaxPriorityFeePerGas: (*hexutil.Big)(callMsg.GasTipCap),
-			Value:                (*hexutil.Big)(callMsg.Value),
-			Nonce:                (*hexutil.Uint64)(callMsg.Nonce),
-			Data:                 &callMsg.Data,
-			AccessList:           &callMsg.AccessList,
-		}
 
 		txBlockCtx := blockCtx
 		callMsg.BlockOverrides.Apply(&txBlockCtx)
 
-		if err := txArgs.CallDefaults(ethconfig.Defaults.RPCGasCap, txBlockCtx.BaseFee, s.chain.Config().ChainID); err != nil {
-			return nil, err
-		}
-		msg := txArgs.ToMessage(txBlockCtx.BaseFee)
-		if callMsg.Nonce != nil {
-			msg.Nonce = *callMsg.Nonce
-			msg.SkipAccountChecks = false
-		}
+		msg := callMsg.ToCoreMessage(txBlockCtx.BaseFee)
 
 		// Create a new EVM environment
 		vmConfig := vm.Config{
@@ -202,16 +177,17 @@ func (s *API) SearcherCall(ctx context.Context, args CallArgs) (*CallResult, err
 			}
 			tracer = NewTracer(cfg)
 			vmConfig.Tracer = tracer.Hooks()
-			if args.EnableTracer {
-				db.SetLogger(vmConfig.Tracer)
-			}
 		}
-		evm := vm.NewEVM(txBlockCtx, core.NewEVMTxContext(msg), db, s.chain.Config(), vmConfig)
+		tracingDB := vm.StateDB(db)
+		if tracer != nil {
+			tracingDB = state.NewHookedState(db, vmConfig.Tracer)
+		}
+		evm := vm.NewEVM(txBlockCtx, tracingDB, s.chain.Config(), vmConfig)
 
 		// Apply state transition
 		txResult := new(TxResult)
 		if tracer != nil {
-			tracer.OnTxStart(evm.GetVMContext(), txArgs.ToTransaction(), msg.From)
+			tracer.OnTxStart(evm.GetVMContext(), nil, msg.From)
 		}
 		result, err := core.ApplyMessage(evm, msg, gp)
 
@@ -389,12 +365,13 @@ func (s *API) applyTransactionWithResult(gp *core.GasPool, db *state.StateDB, bl
 		}
 		tracer = NewTracer(cfg)
 		vmConfig.Tracer = tracer.Hooks()
-		if args.EnableTracer {
-			db.SetLogger(vmConfig.Tracer)
-		}
+	}
+	tracingDB := vm.StateDB(db)
+	if tracer != nil {
+		tracingDB = state.NewHookedState(db, vmConfig.Tracer)
 	}
 	// Create a new context to be used in the EVM environment
-	evm := vm.NewEVM(blockCtx, core.NewEVMTxContext(msg), db, chainConfig, vmConfig)
+	evm := vm.NewEVM(blockCtx, tracingDB, chainConfig, vmConfig)
 
 	// Apply the transaction to the current state (included in the env).
 	coinbaseBalanceBeforeTx := db.GetBalance(blockCtx.Coinbase)

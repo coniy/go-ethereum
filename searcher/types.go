@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
+	"github.com/ethereum/go-ethereum/eth/ethconfig"
 	"github.com/ethereum/go-ethereum/rpc"
 	"github.com/holiman/uint256"
 	"math/big"
@@ -32,7 +34,7 @@ func (diff StateOverrides) Apply(state *state.StateDB) error {
 	for addr, account := range diff {
 		// Override account nonce.
 		if account.Nonce != nil {
-			state.SetNonce(addr, *account.Nonce)
+			state.SetNonce(addr, *account.Nonce, tracing.NonceChangeUnspecified)
 		}
 		// Override account(contract) code.
 		if account.Code != nil {
@@ -114,19 +116,88 @@ func (diff *BlockOverrides) Apply(blockCtx *vm.BlockContext) {
 }
 
 type CallMsg struct {
-	From      common.Address  `json:"from,omitempty"`
-	To        *common.Address `json:"to,omitempty"`
-	Gas       uint64          `json:"gas,omitempty"`
-	GasPrice  *big.Int        `json:"gasPrice,omitempty"`
-	GasFeeCap *big.Int        `json:"gasFeeCap,omitempty"`
-	GasTipCap *big.Int        `json:"gasTipCap,omitempty"`
-	Value     *big.Int        `json:"value,omitempty"`
-	Nonce     *uint64         `json:"nonce,omitempty"`
-	Data      hexutil.Bytes   `json:"data,omitempty"`
+	From              common.Address               `json:"from,omitempty"`
+	To                *common.Address              `json:"to,omitempty"`
+	Gas               uint64                       `json:"gas,omitempty"`
+	GasPrice          *big.Int                     `json:"gasPrice,omitempty"`
+	GasFeeCap         *big.Int                     `json:"gasFeeCap,omitempty"`
+	GasTipCap         *big.Int                     `json:"gasTipCap,omitempty"`
+	Value             *big.Int                     `json:"value,omitempty"`
+	Nonce             *uint64                      `json:"nonce,omitempty"`
+	Data              hexutil.Bytes                `json:"data,omitempty"`
+	BlobGasFeeCap     *big.Int                     `json:"blobGasFeeCap,omitempty"`
+	BlobHashes        []common.Hash                `json:"blobHashes,omitempty"`
+	AuthorizationList []types.SetCodeAuthorization `json:"authorizationList,omitempty"`
 
 	// Introduced by AccessListTxType transaction.
-	AccessList     types.AccessList `json:"accessList,omitempty"`
-	BlockOverrides *BlockOverrides  `json:"blockOverrides,omitempty"`
+	AccessList types.AccessList `json:"accessList,omitempty"`
+
+	BlockOverrides *BlockOverrides `json:"blockOverrides,omitempty"`
+}
+
+func (m *CallMsg) ToCoreMessage(baseFee *big.Int) *core.Message {
+	msg := &core.Message{
+		To:                    m.To,
+		From:                  m.From,
+		Value:                 m.Value,
+		GasLimit:              m.Gas,
+		GasPrice:              m.GasPrice,
+		Data:                  m.Data,
+		AccessList:            m.AccessList,
+		BlobGasFeeCap:         m.BlobGasFeeCap,
+		BlobHashes:            m.BlobHashes,
+		SetCodeAuthorizations: m.AuthorizationList,
+		SkipFromEOACheck:      true,
+	}
+	if msg.GasLimit == 0 {
+		msg.GasLimit = ethconfig.Defaults.RPCGasCap
+	}
+	if msg.Value == nil {
+		msg.Value = new(big.Int)
+	}
+	if baseFee == nil {
+		// If there's no basefee, then it must be a non-1559 execution
+		if msg.GasPrice == nil {
+			msg.GasPrice = new(big.Int)
+		}
+		msg.GasFeeCap = msg.GasPrice
+		msg.GasTipCap = msg.GasPrice
+	} else {
+		// A basefee is provided, necessitating 1559-type execution
+		if msg.GasPrice != nil {
+			// User specified the legacy gas field, convert to 1559 gas typing
+			msg.GasFeeCap = msg.GasPrice
+			msg.GasTipCap = msg.GasPrice
+		} else {
+			// User specified 1559 gas fields (or none), use those
+			msg.GasFeeCap = m.GasFeeCap
+			if msg.GasFeeCap == nil {
+				msg.GasFeeCap = new(big.Int)
+			}
+			msg.GasTipCap = m.GasTipCap
+			if msg.GasTipCap == nil {
+				msg.GasTipCap = new(big.Int)
+			}
+			// Backfill the legacy gasPrice for EVM execution, unless we're all zeroes
+			msg.GasPrice = new(big.Int)
+			if msg.GasFeeCap.BitLen() > 0 || msg.GasFeeCap.BitLen() > 0 {
+				msg.GasPrice = msg.GasPrice.Add(msg.GasTipCap, baseFee)
+				if msg.GasPrice.Cmp(msg.GasFeeCap) > 0 {
+					msg.GasPrice = msg.GasFeeCap
+				}
+			}
+		}
+	}
+
+	if msg.BlobGasFeeCap == nil && msg.BlobHashes != nil {
+		msg.BlobGasFeeCap = new(big.Int)
+	}
+	if m.Nonce == nil {
+		msg.SkipNonceChecks = true
+	} else {
+		msg.Nonce = *m.Nonce
+	}
+	return msg
 }
 
 type CallArgs struct {
