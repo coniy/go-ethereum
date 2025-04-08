@@ -1,4 +1,4 @@
-// Copyright 2022 The go-ethereum Authors
+// Copyright 2023 The go-ethereum Authors
 // This file is part of the go-ethereum library.
 //
 // The go-ethereum library is free software: you can redistribute it and/or modify
@@ -12,7 +12,7 @@
 // GNU Lesser General Public License for more details.
 //
 // You should have received a copy of the GNU Lesser General Public License
-// along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>
+// along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
 
 package rawdb
 
@@ -301,6 +301,10 @@ func ParseStateScheme(provided string, disk ethdb.Database) (string, error) {
 		}
 		log.Info("State scheme set to already existing", "scheme", stored)
 		return stored, nil // reuse scheme of persistent scheme
+	}
+	// If state scheme is specified, ensure it's valid.
+	if provided != HashScheme && provided != PathScheme {
+		return "", fmt.Errorf("invalid state scheme %s", provided)
 	}
 	// If state scheme is specified, ensure it's compatible with
 	// persistent state.

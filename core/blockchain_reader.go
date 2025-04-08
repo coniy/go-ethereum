@@ -18,7 +18,6 @@ package core
 
 import (
 	"errors"
-	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
@@ -85,6 +84,11 @@ func (bc *BlockChain) GetHeaderByHash(hash common.Hash) *types.Header {
 // caching it (associated with its hash) if found.
 func (bc *BlockChain) GetHeaderByNumber(number uint64) *types.Header {
 	return bc.hc.GetHeaderByNumber(number)
+}
+
+// GetBlockNumber retrieves the block number associated with a block hash.
+func (bc *BlockChain) GetBlockNumber(hash common.Hash) *uint64 {
+	return bc.hc.GetBlockNumber(hash)
 }
 
 // GetHeadersFrom returns a contiguous segment of headers, in rlp-form, going
@@ -277,6 +281,13 @@ func (bc *BlockChain) GetTransactionLookup(hash common.Hash) (*rawdb.LegacyTxLoo
 	if tx == nil {
 		progress, err := bc.TxIndexProgress()
 		if err != nil {
+			// No error is returned if the transaction indexing progress is unreachable
+			// due to unexpected internal errors. In such cases, it is impossible to
+			// determine whether the transaction does not exist or has simply not been
+			// indexed yet without a progress marker.
+			//
+			// In such scenarios, the transaction is treated as unreachable, though
+			// this is clearly an unintended and unexpected situation.
 			return nil, nil, nil
 		}
 		// The transaction indexing is not finished yet, returning an
@@ -300,15 +311,9 @@ func (bc *BlockChain) GetTransactionLookup(hash common.Hash) (*rawdb.LegacyTxLoo
 	return lookup, tx, nil
 }
 
-// GetTd retrieves a block's total difficulty in the canonical chain from the
-// database by hash and number, caching it if found.
-func (bc *BlockChain) GetTd(hash common.Hash, number uint64) *big.Int {
-	return bc.hc.GetTd(hash, number)
-}
-
 // HasState checks if state trie is fully present in the database or not.
 func (bc *BlockChain) HasState(hash common.Hash) bool {
-	_, err := bc.stateCache.OpenTrie(hash)
+	_, err := bc.statedb.OpenTrie(hash)
 	return err == nil
 }
 
@@ -337,16 +342,10 @@ func (bc *BlockChain) stateRecoverable(root common.Hash) bool {
 
 // ContractCodeWithPrefix retrieves a blob of data associated with a contract
 // hash either from ephemeral in-memory cache, or from persistent storage.
-//
-// If the code doesn't exist in the in-memory cache, check the storage with
-// new code scheme.
-func (bc *BlockChain) ContractCodeWithPrefix(hash common.Hash) ([]byte, error) {
-	type codeReader interface {
-		ContractCodeWithPrefix(address common.Address, codeHash common.Hash) ([]byte, error)
-	}
+func (bc *BlockChain) ContractCodeWithPrefix(hash common.Hash) []byte {
 	// TODO(rjl493456442) The associated account address is also required
 	// in Verkle scheme. Fix it once snap-sync is supported for Verkle.
-	return bc.stateCache.(codeReader).ContractCodeWithPrefix(common.Address{}, hash)
+	return bc.statedb.ContractCodeWithPrefix(common.Address{}, hash)
 }
 
 // State returns a new mutable state based on the current HEAD block.
@@ -356,7 +355,7 @@ func (bc *BlockChain) State() (*state.StateDB, error) {
 
 // StateAt returns a new mutable state based on a particular point in time.
 func (bc *BlockChain) StateAt(root common.Hash) (*state.StateDB, error) {
-	return state.New(root, bc.stateCache, bc.snaps)
+	return state.New(root, bc.statedb)
 }
 
 // Config retrieves the chain's fork configuration.
@@ -382,7 +381,7 @@ func (bc *BlockChain) Processor() Processor {
 
 // StateCache returns the caching database underpinning the blockchain instance.
 func (bc *BlockChain) StateCache() state.Database {
-	return bc.stateCache
+	return bc.statedb
 }
 
 // GasLimit returns the gas limit of the current HEAD block.
@@ -408,6 +407,12 @@ func (bc *BlockChain) TxIndexProgress() (TxIndexProgress, error) {
 	return bc.txIndexer.txIndexProgress()
 }
 
+// HistoryPruningCutoff returns the configured history pruning point.
+// Blocks before this might not be available in the database.
+func (bc *BlockChain) HistoryPruningCutoff() (uint64, common.Hash) {
+	return bc.cacheConfig.HistoryPruningCutoffNumber, bc.cacheConfig.HistoryPruningCutoffHash
+}
+
 // TrieDB retrieves the low level trie database used for data storage.
 func (bc *BlockChain) TrieDB() *triedb.Database {
 	return bc.triedb
@@ -431,11 +436,6 @@ func (bc *BlockChain) SubscribeChainEvent(ch chan<- ChainEvent) event.Subscripti
 // SubscribeChainHeadEvent registers a subscription of ChainHeadEvent.
 func (bc *BlockChain) SubscribeChainHeadEvent(ch chan<- ChainHeadEvent) event.Subscription {
 	return bc.scope.Track(bc.chainHeadFeed.Subscribe(ch))
-}
-
-// SubscribeChainSideEvent registers a subscription of ChainSideEvent.
-func (bc *BlockChain) SubscribeChainSideEvent(ch chan<- ChainSideEvent) event.Subscription {
-	return bc.scope.Track(bc.chainSideFeed.Subscribe(ch))
 }
 
 // SubscribeLogsEvent registers a subscription of []*types.Log.

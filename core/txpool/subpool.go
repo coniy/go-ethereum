@@ -23,6 +23,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto/kzg4844"
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/holiman/uint256"
 )
@@ -85,6 +86,12 @@ type PendingFilter struct {
 	OnlyBlobTxs  bool // Return only blob transactions (block blob-space filling)
 }
 
+// TxMetadata denotes the metadata of a transaction.
+type TxMetadata struct {
+	Type uint8  // The type of the transaction
+	Size uint64 // The length of the 'rlp encoding' of a transaction
+}
+
 // SubPool represents a specialized transaction pool that lives on its own (e.g.
 // blob pool). Since independent of how many specialized pools we have, they do
 // need to be updated in lockstep and assemble into one coherent view for block
@@ -123,10 +130,28 @@ type SubPool interface {
 	// Get returns a transaction if it is contained in the pool, or nil otherwise.
 	Get(hash common.Hash) *types.Transaction
 
+	// GetRLP returns a RLP-encoded transaction if it is contained in the pool.
+	GetRLP(hash common.Hash) []byte
+
+	// GetMetadata returns the transaction type and transaction size with the
+	// given transaction hash.
+	GetMetadata(hash common.Hash) *TxMetadata
+
+	// GetBlobs returns a number of blobs are proofs for the given versioned hashes.
+	// This is a utility method for the engine API, enabling consensus clients to
+	// retrieve blobs from the pools directly instead of the network.
+	GetBlobs(vhashes []common.Hash) ([]*kzg4844.Blob, []*kzg4844.Proof)
+
+	// ValidateTxBasics checks whether a transaction is valid according to the consensus
+	// rules, but does not check state-dependent validation such as sufficient balance.
+	// This check is meant as a static check which can be performed without holding the
+	// pool mutex.
+	ValidateTxBasics(tx *types.Transaction) error
+
 	// Add enqueues a batch of transactions into the pool if they are valid. Due
 	// to the large transaction churn, add may postpone fully integrating the tx
 	// to a later point to batch multiple ones together.
-	Add(txs []*types.Transaction, local bool, sync bool) []error
+	Add(txs []*types.Transaction, sync bool) []error
 
 	// Pending retrieves all currently processable transactions, grouped by origin
 	// account and sorted by nonce.
@@ -156,10 +181,10 @@ type SubPool interface {
 	// pending as well as queued transactions of this address, grouped by nonce.
 	ContentFrom(addr common.Address) ([]*types.Transaction, []*types.Transaction)
 
-	// Locals retrieves the accounts currently considered local by the pool.
-	Locals() []common.Address
-
 	// Status returns the known status (unknown/pending/queued) of a transaction
 	// identified by their hashes.
 	Status(hash common.Hash) TxStatus
+
+	// Clear removes all tracked transactions from the pool
+	Clear()
 }
